@@ -54,18 +54,19 @@ def _to_response(row: dict[str, Any]) -> ExtractionResponse:
 
     return ExtractionResponse.model_validate(row)
 
-
 def _sanitize_json_payload(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _sanitize_json_payload(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_sanitize_json_payload(v) for v in value]
     if isinstance(value, str):
+        # PostgreSQL jsonb cannot store NUL bytes; strip them defensively.
         return value.replace("\x00", "")
     if isinstance(value, float):
         if math.isnan(value) or math.isinf(value):
             return None
     return value
+
 
 
 def _emit_workflow_event(
@@ -282,3 +283,13 @@ def list_document_extractions(db: Session, document_id: UUID, limit: int, offset
     ).mappings().all()
 
     return ExtractionListResponse(total=total, items=[_to_response(dict(r)) for r in rows])
+
+
+
+
+
+
+
+
+
+

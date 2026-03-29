@@ -63,3 +63,4 @@ def list_document_extractions_endpoint(
         return list_document_extractions(db, document_id, limit, offset)
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail="document not found") from exc
+

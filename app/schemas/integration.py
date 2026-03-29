@@ -47,3 +47,5 @@ class TeamRightWorksCaseIntakeResponse(BaseModel):
     decision_id: str | None = None
     feedback_label_saved: bool = False
     message: str
+
+

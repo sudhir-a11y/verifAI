@@ -746,3 +746,4 @@ def teamrightworks_case_intake(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"teamrightworks intake failed: {exc}") from exc
+

@@ -75,6 +75,7 @@ class ClaimReportSaveResponse(BaseModel):
     html_size: int
 
 
+
 class ClaimReportGrammarCheckRequest(BaseModel):
     report_html: str = Field(min_length=1)
     actor_id: str | None = Field(default=None, max_length=100)
@@ -87,8 +88,6 @@ class ClaimReportGrammarCheckResponse(BaseModel):
     corrected_segments: int
     model: str | None = None
     notes: str | None = None
-
-
 class ClaimStructuredDataRequest(BaseModel):
     use_llm: bool = True
     force_refresh: bool = True
@@ -123,6 +122,7 @@ class ClaimStructuredDataResponse(BaseModel):
     updated_at: datetime
 
 
+
 class ClaimConclusionGenerateRequest(BaseModel):
     report_html: str = Field(min_length=1)
     actor_id: str | None = Field(default=None, max_length=100)
@@ -137,3 +137,4 @@ class ClaimConclusionGenerateResponse(BaseModel):
     recommendation: str | None = None
     triggered_rules_count: int = 0
     source: str = "rule_engine"
+

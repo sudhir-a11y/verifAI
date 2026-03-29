@@ -59,6 +59,7 @@ def _flatten_text(value: Any) -> list[str]:
             out.extend(_flatten_text(item))
         return out
     if isinstance(value, dict):
+        # Exclude feedback/report fields so prior checklist output does not re-trigger rules.
         skip_keys = {
             "conclusion", "detailed conclusion", "recommendation", "recommendation text",
             "final recommendation", "opinion", "exact reason", "rule hits", "checklist",
@@ -243,6 +244,7 @@ def _run_openai_merged_medical_audit(claim_text: str) -> dict[str, Any]:
         "Content-Type": "application/json",
     }
 
+    # Force single model for merged audit to prevent fallback bursts.
     configured_model = "gpt-4.1-mini"
     model_candidates: list[str] = [configured_model]
 
@@ -336,6 +338,7 @@ def _contains_token_non_negated(text_tokens: list[str], token: str) -> bool:
         if tok != token:
             continue
         prev_tok = text_tokens[idx - 1] if idx > 0 else ""
+        # Avoid matching "surgical" from "non surgical" style negatives.
         if prev_tok == "non":
             continue
         return True
@@ -406,6 +409,7 @@ def _phrase_match(text_norm: str, phrase: str) -> bool:
     if _contains_contiguous_phrase(text_tokens, phrase_tokens):
         return True
 
+    # Balanced fallback: allow ordered phrase tokens with small distance.
     return _contains_ordered_tokens_with_max_gap(text_tokens, phrase_tokens, max_gap=3)
 
 
@@ -548,135 +552,207 @@ def _format_entry_note(entry_name: str, rule_remark: str, missing_evidence: list
     if not triggered:
         return "Checklist condition not triggered."
 
-    if decision == ChecklistDecision.approve.value:
-        base = rule_remark or "Checklist condition matched and evidence pattern supports claim."
-    elif decision == ChecklistDecision.reject.value:
-        base = rule_remark or "Checklist condition matched and records indicate potential inconsistency."
-    else:
-        base = rule_remark or "Checklist condition matched but supporting evidence remains incomplete."
+    note_parts: list[str] = []
+    remark = str(rule_remark or "").strip()
+    if remark:
+        note_parts.append(remark)
 
-    missing_human = [
-        _humanize_missing_evidence_term(v)
-        for v in (missing_evidence or [])
-        if str(v or "").strip()
+    if missing_evidence:
+        clean_missing: list[str] = []
+        seen_missing: set[str] = set()
+        for raw in missing_evidence[:12]:
+            item = _humanize_missing_evidence_term(raw)
+            if not item:
+                continue
+            key = _normalize_phrase(item)
+            if key in seen_missing:
+                continue
+            seen_missing.add(key)
+            clean_missing.append(item)
+        if clean_missing:
+            note_parts.append("Missing evidence: " + ", ".join(clean_missing[:8]))
+    elif str(decision or "").upper() == "APPROVE":
+        if not note_parts and entry_name:
+            note_parts.append(f"{entry_name}: Required evidence is present.")
+        elif not note_parts:
+            note_parts.append("Required evidence is present.")
+    out = "; ".join([p for p in note_parts if p])
+    return out or "Checklist condition matched and evidence pattern triggered."
+
+
+
+def _rule_scope_matched(rule_id: str, scope_terms: list[str], text_norm: str) -> bool:
+    rid = str(rule_id or "").strip().upper()
+
+    # Rule-specific tightening to avoid unrelated false triggers.
+    if rid == "R011":
+        return _phrase_match(text_norm, "fracture")
+
+    if rid == "R008":
+        alcohol_present = any(
+            _phrase_match(text_norm, term)
+            for term in ["alcoholism", "alcohol use", "alcohol dependence", "chronic alcohol"]
+        )
+        cld_present = any(
+            _phrase_match(text_norm, term)
+            for term in ["cld", "chronic liver disease", "cirrhosis", "hepatic disease"]
+        )
+        return alcohol_present and cld_present
+
+    if rid == "R007":
+        ayush_terms = [
+            "ayurvedic",
+            "ayuervedic",
+            "ayurveda",
+            "ayush",
+            "bams",
+            "bhms",
+            "bums",
+            "bsms",
+            "panchakarma",
+            "ashtang",
+            "ashtanga",
+            "siddha",
+            "unani",
+            "homeopathy",
+            "homeopathic",
+            "naturopathy",
+        ]
+        matched_count = sum(1 for t in ayush_terms if _phrase_match(text_norm, t))
+        has_ayush_hospital_context = any(
+            _phrase_match(text_norm, phrase)
+            for phrase in ["ayurvedic hospital", "ayush hospital", "ayush treatment", "ayurvedic treatment"]
+        )
+        return matched_count >= 1 or has_ayush_hospital_context
+
+    generic_scope_tokens = {"query", "policy exclusion", "hospital credentials", "flow override"}
+    effective_scope = [
+        s for s in scope_terms
+        if _normalize_phrase(str(s or "")) not in generic_scope_tokens
     ]
-
-    if missing_human and decision != ChecklistDecision.approve.value:
-        return f"{base} Missing evidence: {'; '.join(missing_human)}."
-
-    return base
-
-
-def _build_checklist_entry(rule: dict[str, Any], matched_scope: bool, triggered: bool) -> ChecklistEntry:
-    decision = str(rule.get("decision") or "QUERY").upper().strip()
-    if decision not in {"APPROVE", "QUERY", "REJECT"}:
-        decision = "QUERY"
-
-    missing = [str(item).strip() for item in (rule.get("required_evidence") or []) if str(item).strip()]
-    if not triggered:
-        missing = []
-
-    note = _format_entry_note(
-        entry_name=str(rule.get("name") or ""),
-        rule_remark=str(rule.get("remark_template") or "").strip(),
-        missing_evidence=missing,
-        triggered=triggered,
-        decision=decision,
-    )
-
-    status = "triggered" if triggered else "not_triggered"
-
-    return ChecklistEntry(
-        code=str(rule.get("code") or ""),
-        name=str(rule.get("name") or ""),
-        decision=ChecklistDecision(decision),
-        severity=str(rule.get("severity") or "SOFT_QUERY"),
-        source=str(rule.get("source") or "legacy_catalog"),
-        matched_scope=matched_scope,
-        triggered=triggered,
-        status=status,
-        missing_evidence=missing,
-        note=note,
-    )
-
-
-def _evaluate_checklist(text_norm: str, rules: list[dict[str, Any]], criteria: list[dict[str, Any]]) -> list[ChecklistEntry]:
+    if not effective_scope:
+        return False
+    return any(_phrase_match(text_norm, str(s)) for s in effective_scope)
+def _evaluate_checklist(
+    text_norm: str,
+    rules: list[dict[str, Any]],
+    criteria: list[dict[str, Any]],
+) -> list[ChecklistEntry]:
     entries: list[ChecklistEntry] = []
 
-    for rule in rules:
-        scope_values = rule.get("scope") or []
-        if not isinstance(scope_values, list):
-            scope_values = []
-        matched_scope = any(_phrase_match(text_norm, str(scope_item or "")) for scope_item in scope_values)
+    for rule in sorted(rules, key=lambda r: int(r.get("priority") or 999)):
+        scope = [s for s in (rule.get("scope") or []) if str(s).strip()]
+        required_evidence = [e for e in (rule.get("required_evidence") or []) if str(e).strip()]
 
-        required = rule.get("required_evidence") or []
-        if not isinstance(required, list):
-            required = []
-        required_norm = [str(item).strip() for item in required if str(item).strip()]
-        missing = [item for item in required_norm if not _phrase_match(text_norm, item)]
+        matched_scope = _rule_scope_matched(str(rule.get("rule_id") or ""), scope, text_norm) if scope else True
+        missing_evidence = [str(ev) for ev in required_evidence if not _phrase_match(text_norm, str(ev))]
 
-        triggered = bool(matched_scope)
-        if matched_scope and required_norm:
-            if rule.get("decision") == "APPROVE":
-                triggered = len(missing) == 0
-            else:
-                triggered = len(missing) > 0
+        decision = str(rule.get("decision") or "QUERY").upper()
+        if decision not in {"APPROVE", "QUERY", "REJECT"}:
+            decision = "QUERY"
 
-        entries.append(_build_checklist_entry(rule, matched_scope=matched_scope, triggered=triggered))
+        if not matched_scope:
+            triggered = False
+        elif decision == "APPROVE":
+            triggered = len(missing_evidence) == 0
+        else:
+            triggered = len(missing_evidence) > 0
 
-    for criterion in criteria:
-        aliases = criterion.get("aliases") or []
-        if not isinstance(aliases, list):
-            aliases = []
-        diagnosis_matched = any(_phrase_match(text_norm, str(alias or "")) for alias in aliases)
+        status = decision if triggered else "NOT_MET"
+        note = _format_entry_note(
+            entry_name=str(rule.get("name") or "Legacy claim rule").strip(),
+            rule_remark=str(rule.get("remark_template") or "").strip(),
+            missing_evidence=missing_evidence,
+            triggered=triggered,
+            decision=decision,
+        )
 
-        required = criterion.get("required_evidence") or []
-        if not isinstance(required, list):
-            required = []
-        required_norm = [str(item).strip() for item in required if str(item).strip()]
-        missing = [item for item in required_norm if not _phrase_match(text_norm, item)]
+        entries.append(
+            ChecklistEntry(
+                code=str(rule.get("rule_id") or "").strip().upper() or "RULE",
+                name=str(rule.get("name") or "Legacy claim rule").strip(),
+                decision=ChecklistDecision(decision),
+                severity=str(rule.get("severity") or "SOFT_QUERY").strip().upper(),
+                source="openai_claim_rules",
+                matched_scope=matched_scope,
+                triggered=triggered,
+                status=status,
+                missing_evidence=missing_evidence,
+                note=note,
+            )
+        )
 
-        triggered = bool(diagnosis_matched)
-        if diagnosis_matched and required_norm:
-            if criterion.get("decision") == "APPROVE":
-                triggered = len(missing) == 0
-            else:
-                triggered = len(missing) > 0
+    for criterion in sorted(criteria, key=lambda c: int(c.get("priority") or 999)):
+        aliases = [a for a in (criterion.get("aliases") or []) if str(a).strip()]
+        required_evidence = [e for e in (criterion.get("required_evidence") or []) if str(e).strip()]
 
-        entries.append(_build_checklist_entry(criterion, matched_scope=diagnosis_matched, triggered=triggered))
+        matched_scope = any(_phrase_match(text_norm, str(alias)) for alias in aliases)
+        missing_evidence = [str(ev) for ev in required_evidence if not _phrase_match(text_norm, str(ev))]
+
+        decision = str(criterion.get("decision") or "QUERY").upper()
+        if decision not in {"APPROVE", "QUERY", "REJECT"}:
+            decision = "QUERY"
+
+        if not matched_scope:
+            triggered = False
+        elif decision == "APPROVE":
+            triggered = len(missing_evidence) == 0
+        else:
+            triggered = len(missing_evidence) > 0
+
+        status = decision if triggered else "NOT_MET"
+        note = _format_entry_note(
+            entry_name=str(criterion.get("diagnosis_name") or "Diagnosis criteria").strip(),
+            rule_remark=str(criterion.get("remark_template") or "").strip(),
+            missing_evidence=missing_evidence,
+            triggered=triggered,
+            decision=decision,
+        )
+
+        entries.append(
+            ChecklistEntry(
+                code=str(criterion.get("criteria_id") or "").strip().upper() or "DX",
+                name=str(criterion.get("diagnosis_name") or "Diagnosis criteria").strip(),
+                decision=ChecklistDecision(decision),
+                severity=str(criterion.get("severity") or "SOFT_QUERY").strip().upper(),
+                source="openai_diagnosis_criteria",
+                matched_scope=matched_scope,
+                triggered=triggered,
+                status=status,
+                missing_evidence=missing_evidence,
+                note=note,
+            )
+        )
 
     return entries
 
 
 def _derive_recommendation(entries: list[ChecklistEntry]) -> tuple[str, str, bool, int, str]:
-    triggered = [entry for entry in entries if entry.triggered]
+    triggered = [e for e in entries if e.triggered]
+    triggered_reject = [e for e in triggered if e.decision == ChecklistDecision.reject]
+    triggered_query = [e for e in triggered if e.decision == ChecklistDecision.query]
+    triggered_approve = [e for e in triggered if e.decision == ChecklistDecision.approve]
 
-    rejects = [entry for entry in triggered if entry.decision == ChecklistDecision.reject]
-    queries = [entry for entry in triggered if entry.decision == ChecklistDecision.query]
-    approves = [entry for entry in triggered if entry.decision == ChecklistDecision.approve]
-
-    if rejects:
-        preview = "; ".join(f"{item.code}: {item.name}" for item in rejects[:3])
+    if triggered_reject:
+        preview = "; ".join([f"{e.code} ({e.name})" for e in triggered_reject[:5]])
         return (
             "reject",
             "reject_queue",
             True,
             1,
-            f"Rejection signals: {preview}" if preview else "Rejection signal matched",
+            f"Reject triggers: {preview}" if preview else "Reject trigger matched",
         )
-
-    if queries:
-        preview = "; ".join(f"{item.code}: {item.name}" for item in queries[:3])
+    if triggered_query:
+        preview = "; ".join([f"{e.code} ({e.name})" for e in triggered_query[:5]])
         return (
             "need_more_evidence",
             "query_queue",
             True,
             2,
-            f"Query signals: {preview}" if preview else "Query signal matched",
+            f"Query triggers: {preview}" if preview else "Query trigger matched",
         )
-
-    if approves:
-        preview = "; ".join(f"{item.code}: {item.name}" for item in approves[:3])
+    if triggered_approve:
+        preview = "; ".join([f"{e.code} ({e.name})" for e in triggered_approve[:5]])
         return (
             "approve",
             "auto_approve_queue",
@@ -697,6 +773,7 @@ def _combine_rule_and_ml(
     summary_text: str,
     ml_pred: dict[str, Any],
 ) -> tuple[str, str, bool, int, str]:
+    # Rule-based decision is authoritative. Learning stays advisory.
     if not ml_pred.get("available"):
         return recommendation, route_target, manual_review_required, review_priority, summary_text
 
@@ -842,6 +919,7 @@ def run_claim_checklist_pipeline(
         ml_prediction_obj = predict_claim_recommendation(
             db=db,
             claim_text=context["text"],
+            # Learn on every claim-process run so the model stays continuously refreshed.
             force_retrain=True,
         )
         ml_prediction = {
@@ -884,6 +962,9 @@ def run_claim_checklist_pipeline(
                 if isinstance(openai_merged_review.get("missing_information"), list)
                 else []
             )
+
+            # Rule-first mode: keep rule-based recommendation authoritative.
+            # OpenAI merged audit is appended as advisory evidence only.
 
             note_parts: list[str] = []
             if rationale:
@@ -1158,3 +1239,37 @@ def get_latest_claim_checklist(db: Session, claim_id: UUID) -> ChecklistLatestRe
         checklist=checklist,
         source_summary=source_summary,
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

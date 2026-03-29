@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import mimetypes
 import re
@@ -197,10 +197,12 @@ def _file_name_from_url(url: str, fallback_index: int) -> str:
 def _first_direct_download_url(storage_key: str, metadata: dict[str, Any]) -> str:
     provider = str(metadata.get("storage_provider") or "").strip().lower()
 
+    # Plain HTTP/HTTPS key can be opened directly.
     storage_url = _normalize_http_url(storage_key)
     if storage_url:
         return storage_url
 
+    # External-link style migrated docs should open directly.
     for candidate in (
         metadata.get("external_document_url"),
         metadata.get("external_url"),
@@ -210,6 +212,7 @@ def _first_direct_download_url(storage_key: str, metadata: dict[str, Any]) -> st
         if normalized:
             return normalized
 
+    # For internal S3-backed docs, keep presigned URL behavior (no direct URL override).
     if provider not in {"external_link", "legacy_external"}:
         return ""
 
@@ -712,6 +715,7 @@ def _apply_lossy_pdf_recompress(pdf_bytes: bytes) -> tuple[bytes, int]:
         if not lossy_pdf:
             return pdf_bytes, 0
 
+        # Keep lossy output only when it is smaller than original merged bytes.
         if len(lossy_pdf) < len(pdf_bytes):
             return lossy_pdf, replaced_images
 
@@ -930,6 +934,7 @@ def list_documents(db: Session, claim_id: UUID, limit: int, offset: int) -> Docu
     try:
         ensure_legacy_documents_materialized(db, claim_id)
     except Exception:
+        # Never block document listing because of legacy payload parsing/materialization errors.
         db.rollback()
     params = {"claim_id": str(claim_id), "limit": limit, "offset": offset}
     total = db.execute(
@@ -1169,3 +1174,20 @@ def delete_documents(
         failed_document_ids=failed_ids,
         not_found_document_ids=not_found_ids,
     )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

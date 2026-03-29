@@ -1,4 +1,4 @@
-from urllib.parse import quote
+﻿from urllib.parse import quote
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError

@@ -39,7 +39,7 @@ def _iter_insert_statements(lines: Iterable[str]) -> Iterator[str]:
 
 def _parse_sql_string(blob: str, start: int) -> tuple[str, int]:
     out: list[str] = []
-    i = start + 1
+    i = start + 1  # skip opening quote
     n = len(blob)
     escape_map = {
         "0": "\0",
@@ -196,3 +196,4 @@ def iter_table_rows_from_sql_dump_path(path: str | Path, table_name: str) -> Ite
 def iter_table_rows_from_sql_dump_bytes(payload: bytes, table_name: str) -> Iterator[dict[str, Any]]:
     text_payload = payload.decode("utf-8-sig", errors="ignore")
     yield from _iter_rows_from_lines(text_payload.splitlines(), table_name)
+

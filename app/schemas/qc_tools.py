@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+﻿from pydantic import BaseModel, Field
 
 
 class ClaimRuleUpsertRequest(BaseModel):
@@ -71,6 +71,7 @@ class CompletedReportUploadStatusResponse(BaseModel):
     updated_at: str
 
 
+
 class CompletedReportQcStatusRequest(BaseModel):
     qc_status: str = Field(pattern="^(yes|no)$")
 
@@ -100,3 +101,4 @@ class LegacyMigrationStartRequest(BaseModel):
     status_filter: str = Field(default="completed", pattern="^(all|pending|in_review|needs_qc|completed|withdrawn)$")
     batch_size: int = Field(default=200, ge=1, le=500)
     max_batches: int = Field(default=200, ge=1, le=1000)
+

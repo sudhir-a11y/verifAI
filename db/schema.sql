@@ -407,3 +407,9 @@ CREATE TRIGGER trg_medicine_component_lookup_updated_at
 BEFORE UPDATE ON medicine_component_lookup
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
+
+
+
+
+
+

@@ -57,3 +57,5 @@ class UpdatePasswordRequest(BaseModel):
 class UserListResponse(BaseModel):
     total: int
     items: list[AuthUserResponse]
+
+

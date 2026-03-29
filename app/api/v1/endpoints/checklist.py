@@ -105,3 +105,5 @@ def generate_alignment_labels_endpoint(
         "generated_by": current_user.username,
         **summary,
     }
+
+
