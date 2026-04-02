@@ -1,23 +1,28 @@
-# QC-BKP Modernization Scaffold (Python)
+# QC-BKP Modernization Scaffold
+
+This repo is split into:
+
+- `backend/`: FastAPI API + DB bootstrap + migration scripts
+- `verifAI-UI/`: (planned) React + Vite + Tailwind UI
 
 This project is a modernization foundation for `QC-BKP`, built from the
 `QC-BKP_Modernization_Blueprint.pdf`.
 
 ## What this includes
 
-- FastAPI service skeleton (`app/`) for a modular Python backend
+- FastAPI service skeleton (`backend/app/`) for a modular Python backend
 - New PostgreSQL schema aligned with the blueprint decision-intelligence model
 - One-command database bootstrap script (`scripts/create_database.py`)
 
 ## Project structure
 
-- `app/main.py`: FastAPI app entrypoint
-- `app/api/v1/endpoints/health.py`: API health endpoint
-- `app/core/config.py`: environment-based configuration
-- `app/db/session.py`: SQLAlchemy engine/session utilities
-- `db/schema.sql`: new governed PostgreSQL schema
-- `db/seed.sql`: initial seed records for registry tables
-- `scripts/create_database.py`: create DB + apply schema + apply seeds
+- `backend/app/main.py`: FastAPI app entrypoint
+- `backend/app/api/v1/endpoints/health.py`: API health endpoint
+- `backend/app/core/config.py`: environment-based configuration
+- `backend/app/db/session.py`: SQLAlchemy engine/session utilities
+- `backend/db/schema.sql`: new governed PostgreSQL schema
+- `backend/db/seed.sql`: initial seed records for registry tables
+- `backend/scripts/create_database.py`: create DB + apply schema + apply seeds
 
 - `MIGRATION_MAP.md`: legacy MySQL-to-modern PostgreSQL mapping
 
@@ -34,19 +39,19 @@ This project is a modernization foundation for `QC-BKP`, built from the
 3. Install dependencies:
 
    ```powershell
-   python -m pip install -r requirements.txt
+   python -m pip install -r backend/requirements.txt
    ```
 
 4. Create and initialize the new database:
 
    ```powershell
-   python scripts/create_database.py
+   python backend/scripts/create_database.py
    ```
 
 5. Run the API:
 
    ```powershell
-   uvicorn app.main:app --reload
+   uvicorn backend.app.main:app --reload
    ```
 
 6. Verify:

@@ -3,3 +3,33 @@ __pycache__/
 .env
 .venv/
 venv/
+
+*.pem
+
+# Scratch / investigations (keep repo root clean)
+tmp_*
+_tmp_*
+scratch/
+app_backup_before_ec2_sync_*
+verifAI_source_*.zip*
+_ec2_sync/
+_github_publish_staging/
+_git_*/
+
+.venv/
+.env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
