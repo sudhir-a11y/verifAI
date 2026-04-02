@@ -1,0 +1,235 @@
+{
+  "ok": true,
+  "count": 37,
+  "columns": [
+    "id",
+    "username",
+    "password_hash",
+    "role",
+    "created_at"
+  ],
+  "items": [
+    {
+      "id": 1,
+      "username": "sudhir",
+      "role_raw": "super_admin",
+      "role_normalized": "super_admin"
+    },
+    {
+      "id": 2,
+      "username": "rakhi",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 3,
+      "username": "drsudhir",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 4,
+      "username": "sourabh",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 5,
+      "username": "omprakash",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 8,
+      "username": "deepali",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 9,
+      "username": "Aman",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 11,
+      "username": "Dr deepali",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 12,
+      "username": "deepak",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 13,
+      "username": "Ankit",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 14,
+      "username": "aanchal",
+      "role_raw": "super_admin",
+      "role_normalized": "super_admin"
+    },
+    {
+      "id": 16,
+      "username": "simran",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 17,
+      "username": "Raghvendra",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 18,
+      "username": "dr Raghvendra",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 19,
+      "username": "Dr Ashish",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 20,
+      "username": "neetu",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 21,
+      "username": "Pratibha",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 22,
+      "username": "draanchal",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 23,
+      "username": "drsapna",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 24,
+      "username": "Bhupendra",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 25,
+      "username": "Sapna",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 26,
+      "username": "drajendra",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 27,
+      "username": "drrajasagar",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 28,
+      "username": "drsourabhnamdev",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 29,
+      "username": "Jaipratap",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 30,
+      "username": "Devesh",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 31,
+      "username": "Divyashree",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 32,
+      "username": "Kavyashree",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 33,
+      "username": "Mohit",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 34,
+      "username": "Hardik",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 35,
+      "username": "Rinakhee",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 36,
+      "username": "Swati",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 37,
+      "username": "Teesha",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 38,
+      "username": "Abhishekgupta",
+      "role_raw": "user",
+      "role_normalized": "user"
+    },
+    {
+      "id": 39,
+      "username": "BhojKumar",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 40,
+      "username": "Rashmipatil",
+      "role_raw": "doctor",
+      "role_normalized": "doctor"
+    },
+    {
+      "id": 41,
+      "username": "Preeti",
+      "role_raw": "user",
+      "role_normalized": "user"
+    }
+  ]
+}
