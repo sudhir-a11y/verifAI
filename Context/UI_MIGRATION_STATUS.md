@@ -2,11 +2,23 @@
 
 Source of truth for legacy navigation: `backend/app/web/qc/public/workspace.js` (`NAV` + `PAGE_TITLES`).
 
+Legacy runtime asset inventory:
+
+- `Context/LEGACY_WEB_FOLDER_INVENTORY.md`
+
 React app entry:
 
 - Frontend: `verifAI-UI/` (React + Vite + Tailwind)
 - Routes: `verifAI-UI/src/app/App.jsx`
 - Workspace shell: `verifAI-UI/src/app/WorkspaceLayout.jsx`
+
+## Shared utilities (React)
+
+These were added to support the migrated UI code:
+
+- `verifAI-UI/src/lib/env.js` (`apiBaseUrl`)
+- `verifAI-UI/src/lib/storage.js` (token storage)
+- `verifAI-UI/src/lib/format.js` (date formatting)
 
 ## Migrated (React)
 
@@ -14,11 +26,18 @@ Auth / shell:
 
 - `login` → `verifAI-UI/src/pages/Login.jsx`
 - workspace layout + role nav → `verifAI-UI/src/app/WorkspaceLayout.jsx`
+- standalone tools:
+  - `monitor` → `verifAI-UI/src/pages/Monitor.jsx` (route: `/monitor`)
+  - `report-editor` → `verifAI-UI/src/pages/ReportEditor.jsx` (route: `/report-editor?claim_uuid=...`)
+  - `auditor-qc` → `verifAI-UI/src/pages/AuditorQC.jsx` (route: `/auditor-qc?claim_uuid=...`)
 
 Common:
 
 - `dashboard` → `verifAI-UI/src/pages/Dashboard.jsx` (uses `GET /api/v1/user-tools/dashboard-overview` for `super_admin`, `user`)
 - `change-password` → `verifAI-UI/src/pages/ChangePassword.jsx`
+- `ai-prompt` → `verifAI-UI/src/pages/AIPrompt.jsx` (placeholder shell)
+- `audit-claims` → `verifAI-UI/src/pages/AuditClaims.jsx` (uses `CompletedReports` with `all`)
+- `case-detail` → `verifAI-UI/src/pages/CaseDetail.jsx` (MVP: summary + docs + checklist)
 
 Super admin:
 
@@ -52,15 +71,26 @@ Doctor:
 
 Super admin:
 
-- `ai-prompt`
-
 Doctor:
 
-- `case-detail`
-
 Auditor:
+  (none)
 
-- `audit-claims`
+## Still legacy (not part of workspace nav)
+
+These are standalone screens served from `backend/app/web/*` and not yet migrated to React:
+
+- Monitor screen: migrated in React (`verifAI-UI/src/pages/Monitor.jsx`), but backend still serves legacy `backend/app/web/monitor.html` at `/monitor` until routing is switched over
+- Auditor QC full-screen editor: migrated in React (`verifAI-UI/src/pages/AuditorQC.jsx`), but backend still serves legacy `backend/app/web/qc/public/auditor-qc.html/js` until routing is switched over
+- Report editor full-screen: migrated in React (`verifAI-UI/src/pages/ReportEditor.jsx`), but backend still serves legacy `backend/app/web/qc/public/report-editor.html/js` until routing is switched over
+
+## Feature gaps vs legacy
+
+Even for migrated routes, React pages are currently an MVP vs the legacy implementations:
+
+- `case-detail` legacy includes report generation/edit/save flows, document preview pane, extraction pipeline actions, and claim sync events; React now supports checklist + report generation via `/structured-data` + opens migrated `/report-editor`, plus auditor actions (send back / mark completed). Extraction-pipeline actions are still not fully ported.
+- `case-detail` extraction pipeline is now partially ported: React shows latest extraction per document, can run extraction per-doc or run a simple pipeline (extract missing/force + checklist evaluate). Some of the legacy heuristics (provider selection per doc, richer stage breakdown) are still simplified.
+- `audit-claims` legacy had direct auditor-QC action flows; React currently lists claims via `CompletedReports` only.
 
 ## Policy
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../app/auth";
 import { listClaims } from "../services/claims";
 import { formatDateTime } from "../lib/format";
+import { useNavigate } from "react-router-dom";
 
 const STATUS_OPTIONS = [
   { value: "", label: "All" },
@@ -16,6 +17,7 @@ const STATUS_OPTIONS = [
 export default function AssignedCases() {
   const { user } = useAuth();
   const role = String(user?.role || "");
+  const navigate = useNavigate();
 
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
@@ -83,6 +85,7 @@ export default function AssignedCases() {
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Assigned Doctor</th>
                 <th className="px-4 py-3">Updated</th>
+                <th className="px-4 py-3">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -93,11 +96,21 @@ export default function AssignedCases() {
                   <td className="px-4 py-3">{String(c.status || "-")}</td>
                   <td className="px-4 py-3">{String(c.assigned_doctor_id || "-")}</td>
                   <td className="px-4 py-3 text-slate-600">{formatDateTime(c.updated_at)}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+                      type="button"
+                      onClick={() => navigate(`/app/case-detail?claim_uuid=${encodeURIComponent(String(c.id || ""))}`)}
+                      disabled={!c?.id}
+                    >
+                      Open
+                    </button>
+                  </td>
                 </tr>
               ))}
               {(data?.items || []).length === 0 ? (
                 <tr className="border-t border-slate-100">
-                  <td className="px-4 py-3 text-slate-600" colSpan={5}>
+                  <td className="px-4 py-3 text-slate-600" colSpan={6}>
                     No claims found.
                   </td>
                 </tr>

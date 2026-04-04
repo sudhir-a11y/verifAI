@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../app/auth";
 import { listCompletedReports } from "../services/completedReports";
 import { formatDateTime } from "../lib/format";
+import { useNavigate } from "react-router-dom";
 
 const STATUS_OPTIONS = [
   { value: "pending", label: "Pending" },
@@ -18,7 +19,9 @@ const QC_OPTIONS = [
 export default function CompletedReports({ defaultStatus = "pending" }) {
   const { user } = useAuth();
   const role = String(user?.role || "");
+  const navigate = useNavigate();
   const canUse = useMemo(() => ["super_admin", "user", "auditor", "doctor"].includes(role), [role]);
+  const canQc = useMemo(() => role === "auditor" || role === "super_admin", [role]);
 
   const [status, setStatus] = useState(defaultStatus);
   const [qc, setQc] = useState("all");
@@ -120,6 +123,7 @@ export default function CompletedReports({ defaultStatus = "pending" }) {
                 <th className="px-4 py-3">Report Status</th>
                 <th className="px-4 py-3">QC</th>
                 <th className="px-4 py-3">Updated</th>
+                <th className="px-4 py-3">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -131,11 +135,41 @@ export default function CompletedReports({ defaultStatus = "pending" }) {
                   <td className="px-4 py-3">{String(r.effective_report_status || r.report_status || "-")}</td>
                   <td className="px-4 py-3">{String(r.qc_status || "-")}</td>
                   <td className="px-4 py-3 text-slate-600">{formatDateTime(r.updated_at)}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+                        type="button"
+                        onClick={() =>
+                          navigate(`/app/case-detail?claim_uuid=${encodeURIComponent(String(r.claim_uuid || ""))}`)
+                        }
+                        disabled={!r?.claim_uuid}
+                      >
+                        Open
+                      </button>
+                      {canQc ? (
+                        <button
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+                          type="button"
+                          onClick={() =>
+                            navigate(
+                              `/auditor-qc?claim_uuid=${encodeURIComponent(
+                                String(r.claim_uuid || "")
+                              )}&claim_id=${encodeURIComponent(String(r.external_claim_id || ""))}`
+                            )
+                          }
+                          disabled={!r?.claim_uuid}
+                        >
+                          QC
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
               ))}
               {(data?.items || []).length === 0 ? (
                 <tr className="border-t border-slate-100">
-                  <td className="px-4 py-3 text-slate-600" colSpan={6}>
+                  <td className="px-4 py-3 text-slate-600" colSpan={7}>
                     No completed reports found.
                   </td>
                 </tr>
@@ -147,4 +181,3 @@ export default function CompletedReports({ defaultStatus = "pending" }) {
     </div>
   );
 }
-

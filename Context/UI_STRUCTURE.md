@@ -5,9 +5,14 @@ The long-term plan is to migrate UI into `verifAI-UI/` (React).
 
 ## Entry points (server routes)
 
-- `/monitor` → `backend/app/web/monitor.html`
-- `/qc/login` → `backend/app/web/qc/login.html`
-- `/qc/*` (anything except `login`) → `backend/app/web/qc/workspace.html`
+- `/monitor` → legacy `backend/app/web/monitor.html` (or React `verifAI-UI/dist` when built)
+- `/qc/login` → legacy `backend/app/web/qc/login.html` (or React `verifAI-UI/dist` when built)
+- `/qc/*` (anything except `login`) → legacy `backend/app/web/qc/workspace.html` (or React `verifAI-UI/dist` when built)
+- React standalone routes (served from `verifAI-UI/dist` when built):
+  - `/login`
+  - `/app/*`
+  - `/report-editor`
+  - `/auditor-qc`
 - Static assets are served at `/qc/public/*` from `backend/app/web/qc/public/`
 
 Routing is defined in `backend/app/main.py`.

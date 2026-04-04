@@ -43,3 +43,13 @@ export async function uploadDocument(claimId, file, { retention_class = "standar
   return payload;
 }
 
+export async function getDocumentDownloadUrl(documentId) {
+  return apiFetch(`/api/v1/documents/${encodeURIComponent(documentId)}/download-url`);
+}
+
+export async function getDocumentDownloadUrlWithExpiry(documentId, { expires_in = 900 } = {}) {
+  const params = new URLSearchParams();
+  if (expires_in) params.set("expires_in", String(expires_in));
+  const qs = params.toString();
+  return apiFetch(`/api/v1/documents/${encodeURIComponent(documentId)}/download-url${qs ? `?${qs}` : ""}`);
+}
