@@ -3,7 +3,6 @@ import re
 from uuid import UUID
 from html import unescape
 
-import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
@@ -47,6 +46,12 @@ from app.services.claim_structuring_service import (
     get_claim_structured_data,
 )
 from app.services.grammar_service import GrammarCheckError, grammar_check_report_html
+from app.services.llm_service import (
+    LLMRateLimitError,
+    LLMServiceError,
+    call_openai_chat_completion,
+    normalize_model_candidates,
+)
 from app.services.checklist_pipeline import (
     ClaimNotFoundError as ChecklistClaimNotFoundError,
     get_latest_claim_checklist,
@@ -402,7 +407,7 @@ def _build_rule_based_conclusion_from_report(report_html: str, checklist_payload
 
     conclusion = (
         f"{_build_patient_phrase(insured_text)} with chief complaint of {complaints}, diagnosis of {diagnosis}, "
-        f"treated with following {treatments}, and deranged investigation report of {deranged}. "
+        f"and deranged investigation report of {deranged}. "
         f"Reason for {reason_label}: {reason_text}."
     )
     conclusion = re.sub(r"\s+", " ", str(conclusion or "")).strip()
@@ -416,25 +421,6 @@ _ALLOWED_CONCLUSION_ENDINGS = {
     "Therefore, the claim is kept under query.",
 }
 
-
-def _extract_openai_response_text_for_claims(body: dict) -> str:
-    if not isinstance(body, dict):
-        return ""
-    choices = body.get("choices") if isinstance(body.get("choices"), list) else []
-    first = choices[0] if choices else {}
-    message = first.get("message") if isinstance(first, dict) else {}
-    content = message.get("content") if isinstance(message, dict) else ""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        out: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                val = item.get("text") or item.get("content")
-                if isinstance(val, str) and val.strip():
-                    out.append(val.strip())
-        return "\n".join(out).strip()
-    return ""
 
 
 def _verdict_sentence_from_recommendation(recommendation: str) -> str:
@@ -513,7 +499,7 @@ def _generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: di
 
     user_prompt = (
         "You are a senior medical claim investigator and audit specialist with expertise in insurance claim adjudication, clinical documentation review, medical necessity assessment, and medico-legal audit writing.\n\n"
-        "Your task is to review the Health Claim Investigation Report provided below and generate a single professional conclusion paragraph suitable for TPA/insurance audit use.\n\n"
+        "Your task is to review the Health Claim Assessment Sheet provided below and generate a single professional conclusion paragraph suitable for TPA/insurance audit use.\n\n"
         "REVIEW OBJECTIVES:\n"
         "1. Examine the full report clinically, logically, and documentarily.\n"
         "2. Apply all relevant rules from R001 to R016.\n"
@@ -529,47 +515,40 @@ def _generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: di
         "3. Cross-check diagnosis vs findings/investigations, treatment vs severity, antibiotic/procedure support, LOS necessity, and billing intensity.\n"
         "4. If report conclusion is unsupported, explicitly state it is not consistent with available records.\n"
         "5. Maintain formal, objective, concise medico-legal language.\n"
+        "5a. Do not list tablet/capsule names from discharge summary in the conclusion; keep treatment reference generic if needed.\n"
         "6. No bullets, headings, or labels in output.\n"
         "7. Output must be exactly one paragraph.\n"
         "8. Last sentence must be exactly one of: Therefore, the claim is admissible. OR Therefore, the claim is recommended for rejection. OR Therefore, the claim is kept under query.\n\n"
         "TRIGGERED RULE HINTS FROM ENGINE: "
         + trigger_hint
-        + "\n\nHEALTH CLAIM INVESTIGATION REPORT:\n"
+        + "\n\nHEALTH CLAIM ASSESSMENT SHEET:\n"
         + report_text
     )
-
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    candidates: list[str] = []
-    for item in [settings.openai_rag_model, settings.openai_model, "gpt-4.1-mini", "gpt-4o-mini"]:
-        model = str(item or "").strip()
-        if model and model not in candidates:
-            candidates.append(model)
+    candidates = normalize_model_candidates([
+        settings.openai_rag_model,
+        settings.openai_model,
+        "gpt-4.1-mini",
+        "gpt-4o-mini",
+    ])
 
     errors: list[str] = []
     for model in candidates:
-        request_payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a medico-legal claim audit writer. Return exactly one paragraph only."},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-        }
         try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(url, headers=headers, json=request_payload)
-                response.raise_for_status()
-            raw = _extract_openai_response_text_for_claims(response.json())
-            normalized = _normalize_ai_conclusion_paragraph(raw, recommendation)
+            result = call_openai_chat_completion(
+                model=model,
+                system_prompt="You are a medico-legal claim audit writer. Return exactly one paragraph only.",
+                user_prompt=user_prompt,
+                timeout_seconds=120.0,
+                temperature=0.1,
+            )
+            normalized = _normalize_ai_conclusion_paragraph(result.output_text, recommendation)
             if normalized:
                 return normalized
             errors.append(f"{model}: empty_output")
+        except LLMRateLimitError as exc:
+            errors.append(f"{model}: {exc}")
+        except LLMServiceError as exc:
+            errors.append(f"{model}: {exc}")
         except Exception as exc:
             errors.append(f"{model}: {exc}")
 
@@ -685,6 +664,7 @@ def save_claim_report_html_endpoint(
         raise HTTPException(status_code=403, detail="doctor can save report only for assigned claims")
 
     report_html = (payload.report_html or "").strip()
+    report_html = report_html.replace("HEALTH CLAIM INVESTIGATION REPORT", "HEALTH CLAIM ASSESSMENT SHEET")
     if not report_html:
         raise HTTPException(status_code=400, detail="report_html is required")
     if len(report_html) > 2_000_000:
@@ -1114,6 +1094,11 @@ def get_claim_structured_data_endpoint(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"structured data generation failed: {exc}") from exc
+
+
+
+
+
 
 
 

@@ -41,11 +41,22 @@ class MedicineUpsertRequest(BaseModel):
     is_high_end_antibiotic: bool = False
 
 
+class ExcelImportRejectedRow(BaseModel):
+    row_number: int
+    claim_id: str = ""
+    reason: str
+
+
 class ExcelImportResponse(BaseModel):
     total_rows: int
+    uploaded: int = 0
     inserted: int
     updated: int
     skipped: int
+    rejected_count: int = 0
+    rejected_rows: list[ExcelImportRejectedRow] = Field(default_factory=list)
+    rejected_excel_base64: str = ""
+    rejected_excel_filename: str = ""
 
 
 class ResetUserPasswordRequest(BaseModel):

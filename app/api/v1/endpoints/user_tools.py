@@ -1,4 +1,5 @@
 import logging
+import base64
 import csv
 import io
 import json
@@ -57,6 +58,13 @@ def _normalize_optional_text(value: Any) -> str:
     if raw.lower() in _EMPTY_LIKE_TEXT_VALUES:
         return ""
     return raw
+
+
+def _normalize_report_title_html(value: Any) -> str:
+    html = str(value or "")
+    if not html:
+        return ""
+    return html.replace("HEALTH CLAIM INVESTIGATION REPORT", "HEALTH CLAIM ASSESSMENT SHEET")
 
 def _parse_datetime_utc(value: Any) -> datetime | None:
     if isinstance(value, datetime):
@@ -488,91 +496,159 @@ async def upload_excel(
     inserted = 0
     updated = 0
     skipped = 0
+    rejected_rows: list[dict[str, Any]] = []
 
-    for row in rows:
+    for idx, row in enumerate(rows, start=2):
         claim = _extract_claim_fields(row)
         if claim is None:
             skipped += 1
+            raw_claim_id = (
+                str(
+                    row.get("external_claim_id")
+                    or row.get("claim_id")
+                    or row.get("claim no")
+                    or row.get("claim")
+                    or ""
+                ).strip()
+            )
+            rejected_rows.append(
+                {
+                    "row_number": idx,
+                    "claim_id": raw_claim_id,
+                    "reason": "Missing claim ID (external_claim_id / claim_id / claim no / claim).",
+                }
+            )
             continue
 
-        existing = db.execute(
-            text("SELECT id FROM claims WHERE external_claim_id = :external_claim_id LIMIT 1"),
-            {"external_claim_id": claim["external_claim_id"]},
-        ).mappings().first()
+        try:
+            with db.begin_nested():
+                existing = db.execute(
+                    text("SELECT id FROM claims WHERE external_claim_id = :external_claim_id LIMIT 1"),
+                    {"external_claim_id": claim["external_claim_id"]},
+                ).mappings().first()
 
-        claim_uuid: str
-        if existing is None:
-            inserted_row = db.execute(
-                text(
-                    """
-                    INSERT INTO claims (
-                        external_claim_id, patient_name, patient_identifier, status,
-                        assigned_doctor_id, priority, source_channel, tags, completed_at
-                    ) VALUES (
-                        :external_claim_id, :patient_name, :patient_identifier, CAST(:status AS claim_status),
-                        :assigned_doctor_id, :priority, :source_channel, CAST(:tags AS jsonb),
-                        CASE WHEN CAST(:status AS claim_status) = 'completed'::claim_status THEN NOW() ELSE NULL END
+                claim_uuid: str
+                if existing is None:
+                    inserted_row = db.execute(
+                        text(
+                            """
+                            INSERT INTO claims (
+                                external_claim_id, patient_name, patient_identifier, status,
+                                assigned_doctor_id, priority, source_channel, tags, completed_at
+                            ) VALUES (
+                                :external_claim_id, :patient_name, :patient_identifier, CAST(:status AS claim_status),
+                                :assigned_doctor_id, :priority, :source_channel, CAST(:tags AS jsonb),
+                                CASE WHEN CAST(:status AS claim_status) = 'completed'::claim_status THEN NOW() ELSE NULL END
+                            )
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            **claim,
+                            "tags": json.dumps(claim["tags"]),
+                        },
+                    ).mappings().one()
+                    claim_uuid = str(inserted_row["id"])
+                    inserted += 1
+                else:
+                    skipped += 1
+                    rejected_rows.append(
+                        {
+                            "row_number": idx,
+                            "claim_id": str(claim.get("external_claim_id") or "").strip(),
+                            "reason": "Claim ID already exists. Duplicate claim numbers are rejected.",
+                        }
                     )
-                    RETURNING id
-                    """
-                ),
+                    continue
+
+                legacy_payload = dict(row)
+                if not str(legacy_payload.get("claim_id") or "").strip():
+                    legacy_payload["claim_id"] = str(claim.get("external_claim_id") or "")
+                if not str(legacy_payload.get("source_file_name") or "").strip():
+                    legacy_payload["source_file_name"] = str(file.filename or "")
+                if not str(legacy_payload.get("uploaded_by_username") or "").strip():
+                    legacy_payload["uploaded_by_username"] = str(current_user.username or "")
+
+                db.execute(
+                    text(
+                        """
+                        INSERT INTO claim_legacy_data (claim_id, legacy_payload, updated_at)
+                        VALUES (:claim_id, CAST(:legacy_payload AS jsonb), NOW())
+                        ON CONFLICT (claim_id)
+                        DO UPDATE SET
+                            legacy_payload = EXCLUDED.legacy_payload,
+                            updated_at = NOW()
+                        """
+                    ),
+                    {
+                        "claim_id": claim_uuid,
+                        "legacy_payload": json.dumps(legacy_payload),
+                    },
+                )
+        except Exception as exc:
+            skipped += 1
+            reason_text = "Upload row failed"
+            if str(exc).strip():
+                reason_text = str(exc).replace("\r", " ").replace("\n", " ").strip()
+            if len(reason_text) > 260:
+                reason_text = reason_text[:257] + "..."
+            rejected_rows.append(
                 {
-                    **claim,
-                    "tags": json.dumps(claim["tags"]),
-                },
-            ).mappings().one()
-            claim_uuid = str(inserted_row["id"])
-            inserted += 1
-        else:
-            claim_uuid = str(existing["id"])
-            db.execute(
-                text(
-                    """
-                    UPDATE claims
-                    SET patient_name = :patient_name,
-                        patient_identifier = :patient_identifier,
-                        status = CAST(:status AS claim_status),
-                        completed_at = CASE WHEN CAST(:status AS claim_status) = 'completed'::claim_status THEN COALESCE(completed_at, NOW()) ELSE completed_at END,
-                        assigned_doctor_id = :assigned_doctor_id,
-                        source_channel = :source_channel,
-                        tags = CAST(:tags AS jsonb)
-                    WHERE external_claim_id = :external_claim_id
-                    """
-                ),
-                {
-                    **claim,
-                    "tags": json.dumps(claim["tags"]),
-                },
+                    "row_number": idx,
+                    "claim_id": str(claim.get("external_claim_id") or "").strip(),
+                    "reason": reason_text,
+                }
             )
-            updated += 1
 
-        legacy_payload = dict(row)
-        if not str(legacy_payload.get("claim_id") or "").strip():
-            legacy_payload["claim_id"] = str(claim.get("external_claim_id") or "")
-        if not str(legacy_payload.get("source_file_name") or "").strip():
-            legacy_payload["source_file_name"] = str(file.filename or "")
-        if not str(legacy_payload.get("uploaded_by_username") or "").strip():
-            legacy_payload["uploaded_by_username"] = str(current_user.username or "")
+    rejected_excel_base64 = ""
+    rejected_excel_filename = ""
+    if rejected_rows:
+        try:
+            from openpyxl import Workbook
+            from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
-        db.execute(
-            text(
-                """
-                INSERT INTO claim_legacy_data (claim_id, legacy_payload, updated_at)
-                VALUES (:claim_id, CAST(:legacy_payload AS jsonb), NOW())
-                ON CONFLICT (claim_id)
-                DO UPDATE SET
-                    legacy_payload = EXCLUDED.legacy_payload,
-                    updated_at = NOW()
-                """
-            ),
-            {
-                "claim_id": claim_uuid,
-                "legacy_payload": json.dumps(legacy_payload),
-            },
-        )
+            def _xlsx_text(v: Any) -> str:
+                txt = str(v or "")
+                txt = ILLEGAL_CHARACTERS_RE.sub("", txt)
+                if len(txt) > 32767:
+                    txt = txt[:32767]
+                return txt
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Rejected Rows"
+            ws.append(["row_number", "claim_id", "reason"])
+            for item in rejected_rows:
+                ws.append(
+                    [
+                        int(item.get("row_number") or 0),
+                        _xlsx_text(item.get("claim_id") or ""),
+                        _xlsx_text(item.get("reason") or ""),
+                    ]
+                )
+            out = io.BytesIO()
+            wb.save(out)
+            rejected_excel_base64 = base64.b64encode(out.getvalue()).decode("ascii")
+            safe_name = str(file.filename or "upload").strip() or "upload"
+            safe_name = re.sub(r"[\\/:*?\"<>|]+", "_", safe_name)
+            safe_name = re.sub(r"\.[A-Za-z0-9]+$", "", safe_name)
+            rejected_excel_filename = f"{safe_name}_rejected_rows.xlsx"
+        except Exception as exc:
+            logger.warning("failed to build rejected rows xlsx: %s", exc)
 
     db.commit()
-    return ExcelImportResponse(total_rows=len(rows), inserted=inserted, updated=updated, skipped=skipped)
+    uploaded = int(inserted + updated)
+    return ExcelImportResponse(
+        total_rows=len(rows),
+        uploaded=uploaded,
+        inserted=inserted,
+        updated=updated,
+        skipped=skipped,
+        rejected_count=len(rejected_rows),
+        rejected_rows=rejected_rows,
+        rejected_excel_base64=rejected_excel_base64,
+        rejected_excel_filename=rejected_excel_filename,
+    )
 
 @router.get("/completed-reports")
 def completed_reports(
@@ -1150,7 +1226,7 @@ def get_completed_report_latest_html(
         {"claim_id": str(claim_id)},
     ).mappings().first()
 
-    report_html = str(row.get("report_html") or "") if row is not None else ""
+    report_html = _normalize_report_title_html(row.get("report_html")) if row is not None else ""
     if row is None or not report_html.strip():
         decision_system_report_expr = _system_report_sql("dr.generated_by")
         decision_source_where = ""
@@ -1191,7 +1267,7 @@ def get_completed_report_latest_html(
         )
         raise HTTPException(status_code=404, detail=detail)
 
-    report_html = str(row.get("report_html") or "")
+    report_html = _normalize_report_title_html(row.get("report_html"))
     if not report_html.strip():
         detail = (
             "No saved report HTML found for this claim and source."
@@ -1530,6 +1606,9 @@ def dashboard_overview(
     db: Session = Depends(get_db),
     _current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user)),
 ) -> dict:
+    _ensure_claim_report_uploads_table(db)
+    _ensure_claim_legacy_data_table(db)
+
     day_rows = db.execute(
         text(
             """
@@ -1578,6 +1657,62 @@ def dashboard_overview(
             """
         )
     ).mappings().all()
+
+    fraud_row = db.execute(
+        text(
+            """
+            WITH upload_meta AS (
+                SELECT
+                    claim_id,
+                    tagging
+                FROM claim_report_uploads
+            ),
+            legacy_data AS (
+                SELECT
+                    claim_id,
+                    legacy_payload
+                FROM claim_legacy_data
+            ),
+            fraud_base AS (
+                SELECT
+                    LOWER(
+                        TRIM(
+                            COALESCE(NULLIF(TRIM(COALESCE(um.tagging, '')), ''), '')
+                        )
+                    ) AS tagging_value,
+                    TRIM(
+                        COALESCE(
+                            ldata.legacy_payload->>'claim_amount',
+                            ldata.legacy_payload->>'claimamount',
+                            ldata.legacy_payload->>'claim amount',
+                            ''
+                        )
+                    ) AS claim_amount_text
+                FROM claims c
+                LEFT JOIN upload_meta um ON um.claim_id = c.id
+                LEFT JOIN legacy_data ldata ON ldata.claim_id = c.id
+            )
+            SELECT
+                COUNT(*) AS fraud_tagged_savings_cases,
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN claim_amount_text ~* '^\\s*(inr|rs\\.?|₹)?\\s*[0-9]{1,3}(,[0-9]{2,3})*(\\.[0-9]+)?\\s*(/-)?\\s*$'
+                              OR claim_amount_text ~* '^\\s*(inr|rs\\.?|₹)?\\s*[0-9]+(\\.[0-9]+)?\\s*(/-)?\\s*$'
+                            THEN NULLIF(
+                                REGEXP_REPLACE(claim_amount_text, '[^0-9.]', '', 'g'),
+                                ''
+                            )::NUMERIC
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) AS fraud_tagged_savings_amount
+            FROM fraud_base
+            WHERE tagging_value IN ('fraudulent', 'fraudlent')
+            """
+        )
+    ).mappings().one()
 
     assignee_rows = db.execute(
         text(
@@ -1638,6 +1773,8 @@ def dashboard_overview(
             }
             for r in assignee_rows
         ],
+        "fraud_tagged_savings_cases": int(fraud_row.get("fraud_tagged_savings_cases") or 0),
+        "fraud_tagged_savings_amount": float(fraud_row.get("fraud_tagged_savings_amount") or 0),
     }
 @router.get("/doctor-completion-stats")
 def doctor_completion_stats(

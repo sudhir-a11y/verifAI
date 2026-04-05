@@ -12,6 +12,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from pypdf import PdfReader
 
 from app.core.config import settings
+from app.services.llm_service import extract_openai_response_text as _shared_extract_openai_response_text
 from app.schemas.extraction import ExtractionProvider
 
 
@@ -793,46 +794,9 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
     if not focused_has_content:
         normalized["detailed_conclusion"] = "No relevant medical details extracted from this document."
     return normalized
+
 def _extract_openai_response_text(body: Any) -> str:
-    if not isinstance(body, dict):
-        return ""
-
-    direct = body.get("output_text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-
-    output_chunks: list[str] = []
-    output = body.get("output")
-    if isinstance(output, list):
-        for out in output:
-            if not isinstance(out, dict):
-                continue
-            content = out.get("content")
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                t = item.get("text")
-                if isinstance(t, str) and t.strip():
-                    output_chunks.append(t.strip())
-        if output_chunks:
-            return "\n".join(output_chunks).strip()
-
-    msg = (((body.get("choices") or [{}])[0]).get("message") or {}) if isinstance(body.get("choices"), list) else {}
-    msg_content = msg.get("content") if isinstance(msg, dict) else ""
-    if isinstance(msg_content, str):
-        return msg_content.strip()
-    if isinstance(msg_content, list):
-        joined = []
-        for item in msg_content:
-            if isinstance(item, dict):
-                t = item.get("text") or item.get("content")
-                if isinstance(t, str) and t.strip():
-                    joined.append(t.strip())
-        return "\n".join(joined).strip()
-    return ""
-
+    return _shared_extract_openai_response_text(body)
 
 def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
     text = (content or "").strip()
@@ -1771,6 +1735,8 @@ def run_extraction(
         except (ExtractionConfigError, ExtractionProcessingError):
             return _extract_local(document_name, mime_type, payload)
     return _extract_local(document_name, mime_type, payload)
+
+
 
 
 

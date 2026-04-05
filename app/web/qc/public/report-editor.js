@@ -193,6 +193,12 @@
     return false;
   }
 
+  function normalizeHealthClaimReportTitle(html) {
+    const value = String(html || '');
+    if (!value) return '';
+    return value.replace(/HEALTH CLAIM INVESTIGATION REPORT/g, 'HEALTH CLAIM ASSESSMENT SHEET');
+  }
+
   async function fetchLatestReportHtml(params) {
     if (!params.claimUuid) return '';
 
@@ -201,7 +207,7 @@
       const src = sources[i];
       try {
         const body = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=' + encodeURIComponent(src));
-        const html = String(body && body.report_html ? body.report_html : '').trim();
+        const html = normalizeHealthClaimReportTitle(String(body && body.report_html ? body.report_html : '').trim());
         if (html) return html;
       } catch (_err) {
       }

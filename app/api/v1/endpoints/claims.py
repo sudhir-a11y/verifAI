@@ -513,7 +513,7 @@ def _generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: di
 
     user_prompt = (
         "You are a senior medical claim investigator and audit specialist with expertise in insurance claim adjudication, clinical documentation review, medical necessity assessment, and medico-legal audit writing.\n\n"
-        "Your task is to review the Health Claim Investigation Report provided below and generate a single professional conclusion paragraph suitable for TPA/insurance audit use.\n\n"
+        "Your task is to review the Health Claim Assessment Sheet provided below and generate a single professional conclusion paragraph suitable for TPA/insurance audit use.\n\n"
         "REVIEW OBJECTIVES:\n"
         "1. Examine the full report clinically, logically, and documentarily.\n"
         "2. Apply all relevant rules from R001 to R016.\n"
@@ -537,7 +537,7 @@ def _generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: di
         "10. Keep the conclusion detailed but still a single paragraph with no extra sections.\n\n"
         "TRIGGERED RULE HINTS FROM ENGINE: "
         + trigger_hint
-        + "\n\nHEALTH CLAIM INVESTIGATION REPORT:\n"
+        + "\n\nHEALTH CLAIM ASSESSMENT SHEET:\n"
         + report_text
     )
 
@@ -688,6 +688,7 @@ def save_claim_report_html_endpoint(
         raise HTTPException(status_code=403, detail="doctor can save report only for assigned claims")
 
     report_html = (payload.report_html or "").strip()
+    report_html = report_html.replace("HEALTH CLAIM INVESTIGATION REPORT", "HEALTH CLAIM ASSESSMENT SHEET")
     if not report_html:
         raise HTTPException(status_code=400, detail="report_html is required")
     if len(report_html) > 2_000_000:

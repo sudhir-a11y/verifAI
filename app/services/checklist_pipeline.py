@@ -6,11 +6,16 @@ import time
 from typing import Any
 from uuid import UUID
 
-import httpx
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.llm_service import (
+    LLMRateLimitError,
+    LLMServiceError,
+    call_openai_chat_completion,
+    parse_json_dict_from_text,
+)
 from app.schemas.checklist import (
     ChecklistDecision,
     ChecklistEntry,
@@ -72,52 +77,6 @@ def _flatten_text(value: Any) -> list[str]:
             out.extend(_flatten_text(v))
         return out
     return out
-
-def _extract_openai_response_text(body: Any) -> str:
-    if not isinstance(body, dict):
-        return ""
-
-    msg = (((body.get("choices") or [{}])[0]).get("message") or {}) if isinstance(body.get("choices"), list) else {}
-    msg_content = msg.get("content") if isinstance(msg, dict) else ""
-    if isinstance(msg_content, str):
-        return msg_content.strip()
-    if isinstance(msg_content, list):
-        joined = []
-        for item in msg_content:
-            if isinstance(item, dict):
-                t = item.get("text") or item.get("content")
-                if isinstance(t, str) and t.strip():
-                    joined.append(t.strip())
-        return "\n".join(joined).strip()
-    return ""
-
-
-def _parse_json_dict_from_text(raw_text: str) -> dict[str, Any] | None:
-    text_value = str(raw_text or "").strip()
-    if not text_value:
-        return None
-
-    if text_value.startswith("```"):
-        text_value = re.sub(r"^```(?:json)?\s*", "", text_value, flags=re.I)
-        text_value = re.sub(r"\s*```$", "", text_value)
-        text_value = text_value.strip()
-
-    try:
-        parsed = json.loads(text_value)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        pass
-
-    first = text_value.find("{")
-    last = text_value.rfind("}")
-    if first >= 0 and last > first:
-        candidate = text_value[first : last + 1]
-        try:
-            parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
-    return None
 
 
 def _dedup_text_list(value: Any, limit: int) -> list[str]:
@@ -237,13 +196,6 @@ def _run_openai_merged_medical_audit(claim_text: str) -> dict[str, Any]:
         + merged_text
     )
 
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
     # Force single model for merged audit to prevent fallback bursts.
     configured_model = "gpt-4.1-mini"
     model_candidates: list[str] = [configured_model]
@@ -254,34 +206,25 @@ def _run_openai_merged_medical_audit(claim_text: str) -> dict[str, Any]:
     raw_output = ""
 
     for candidate in model_candidates:
-        request_payload = {
-            "model": candidate,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are an expert medical auditor and claim reviewer. Return strict JSON only.",
-                },
-                {"role": "user", "content": user_prompt},
-            ],
-        }
         try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(url, headers=headers, json=request_payload)
-                response.raise_for_status()
-            body = response.json()
-            used_model = str(body.get("model") or candidate)
-            raw_output = _extract_openai_response_text(body)
-            parsed = _parse_json_dict_from_text(raw_output)
+            result = call_openai_chat_completion(
+                model=candidate,
+                system_prompt="You are an expert medical auditor and claim reviewer. Return strict JSON only.",
+                user_prompt=user_prompt,
+                timeout_seconds=120.0,
+                response_format_json=True,
+            )
+            used_model = result.used_model
+            raw_output = result.output_text
+            parsed = parse_json_dict_from_text(raw_output)
             if isinstance(parsed, dict):
                 break
             errors.append(f"{candidate} => invalid_json")
-        except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code if exc.response is not None else 0
-            if status_code == 429:
-                _openai_merged_rate_limited_until = time.time() + _OPENAI_MERGED_RATE_LIMIT_COOLDOWN_SECONDS
-                raise RuntimeError(_OPENAI_MERGED_RATE_LIMIT_MARKER)
-            errors.append(f"{candidate} => HTTP {status_code}: {exc}")
+        except LLMRateLimitError:
+            _openai_merged_rate_limited_until = time.time() + _OPENAI_MERGED_RATE_LIMIT_COOLDOWN_SECONDS
+            raise RuntimeError(_OPENAI_MERGED_RATE_LIMIT_MARKER)
+        except LLMServiceError as exc:
+            errors.append(f"{candidate} => {exc}")
         except Exception as exc:
             errors.append(f"{candidate} => {exc}")
 
@@ -1355,6 +1298,8 @@ def get_latest_claim_checklist(db: Session, claim_id: UUID) -> ChecklistLatestRe
         checklist=checklist,
         source_summary=source_summary,
     )
+
+
 
 
 

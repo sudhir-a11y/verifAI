@@ -425,15 +425,24 @@
     }
   }
   async function renderSuperAdminDashboard() {
-    const [users, rules, criteria, suggestions] = await Promise.all([
+    const [users, rules, criteria, suggestions, dashboardData] = await Promise.all([
       apiFetch("/api/v1/auth/users?limit=500"),
       apiFetch("/api/v1/admin/claim-rules?limit=1"),
       apiFetch("/api/v1/admin/diagnosis-criteria?limit=1"),
       apiFetch("/api/v1/admin/rule-suggestions?status_filter=pending&limit=1"),
+      apiFetch('/api/v1/user-tools/dashboard-overview').catch(function () {
+        return {};
+      }),
     ]);
 
     const doctors = (users.items || []).filter((u) => u.role === "doctor").length;
     const operations = (users.items || []).filter((u) => u.role === "user").length;
+    const fraudTaggedSavingsCases = Number((dashboardData && dashboardData.fraud_tagged_savings_cases) || 0);
+    const fraudTaggedSavingsAmount = Number((dashboardData && dashboardData.fraud_tagged_savings_amount) || 0);
+    const fraudTaggedSavingsLabel = 'INR ' + fraudTaggedSavingsAmount.toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
 
     contentPanel.innerHTML = '<h2>Dashboard Overview</h2><p class="muted">Legacy QC admin controls in one screen.</p>'
       + '<div class="stats-grid">'
@@ -445,6 +454,7 @@
       + '<article class="stat-card"><div class="muted">Claim Rules</div><div class="value">' + rules.total + "</div></article>"
       + '<article class="stat-card"><div class="muted">Diagnosis Criteria</div><div class="value">' + criteria.total + "</div></article>"
       + '<article class="stat-card"><div class="muted">Pending Suggestions</div><div class="value">' + suggestions.total + "</div></article>"
+      + '<article class="stat-card"><div class="muted">Fraud Tagged Savings</div><div class="value">' + escapeHtml(fraudTaggedSavingsLabel) + '</div><div class="muted">From ' + escapeHtml(String(fraudTaggedSavingsCases)) + ' case(s)</div></article>'
       + '</div>'
       + '<section class="claim-status-panel" style="margin-top:16px;">'
       + '<h3 class="claim-status-title">Import Analysis SQL</h3>'
@@ -3301,7 +3311,7 @@
       const generatedMeta = firstNonEmpty(generatedAt, '-');
       const doctorMeta = firstNonEmpty(doctorName, '-');
 
-      return '<h1 class="title">HEALTH CLAIM INVESTIGATION REPORT</h1>'
+      return '<h1 class="title">HEALTH CLAIM ASSESSMENT SHEET</h1>'
         + '<div class="meta">Generated: ' + escapeHtml(generatedMeta) + ' | Doctor: ' + escapeHtml(doctorMeta) + '</div>'
         + '<table class="t"><tbody>'
         + '<tr><th>COMPANY NAME</th><td>' + escapeHtml(companyName) + '</td></tr>'
@@ -3781,7 +3791,7 @@
       const targetSource = (String(source || 'doctor').toLowerCase() === 'system') ? 'system' : 'doctor';
       try {
         const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(claimUuid) + '/latest-html?source=' + encodeURIComponent(targetSource));
-        const html = String(payload && payload.report_html ? payload.report_html : '').trim();
+        const html = normalizeHealthClaimReportTitle(String(payload && payload.report_html ? payload.report_html : '').trim());
         if (!html) throw new Error('No saved report HTML found for this claim and source.');
 
         const reportCreatedAtMs = Date.parse(String((payload && payload.created_at) || ''));
@@ -4720,16 +4730,109 @@
     contentPanel.innerHTML = '<h2>Upload Excel</h2><p class="muted">Upload case data in xlsx/csv/sql format.</p>'
       + '<p id="upload-excel-msg"></p><form id="upload-excel-form">'
       + '<div class="form-row"><label>Select File</label><input type="file" name="file" accept=".xlsx,.csv,.sql" required></div>'
-      + '<button type="submit">Upload Excel</button></form>';
+      + '<button type="submit">Upload Excel</button></form>'
+      + '<div id="upload-excel-rejected-wrap" style="display:none;margin-top:10px;">'
+      + '<a id="upload-excel-download-rejected" href="#" download>Download Error Excel</a>'
+      + '</div>'
+      + '<div id="upload-excel-overlay" style="display:none;position:fixed;inset:0;background:rgba(12, 24, 45, 0.35);z-index:9999;align-items:center;justify-content:center;">'
+      + '<div style="background:#fff;border-radius:12px;padding:16px 18px;box-shadow:0 10px 30px rgba(0,0,0,0.2);font-weight:600;color:#1c2b3a;">Uploading file, please wait...</div>'
+      + '</div>';
+
+    const rejectedWrap = document.getElementById('upload-excel-rejected-wrap');
+    const downloadRejectedLink = document.getElementById('upload-excel-download-rejected');
+    const overlayEl = document.getElementById('upload-excel-overlay');
+    let rejectedDownloadObjectUrl = '';
+
+    function clearRejectedLink() {
+      if (rejectedDownloadObjectUrl) {
+        try { URL.revokeObjectURL(rejectedDownloadObjectUrl); } catch (_err) {}
+        rejectedDownloadObjectUrl = '';
+      }
+      if (downloadRejectedLink) {
+        downloadRejectedLink.removeAttribute('href');
+        downloadRejectedLink.removeAttribute('download');
+      }
+    }
+
+    function base64ToBytes(base64Text) {
+      const clean = String(base64Text || '').replace(/\s+/g, '');
+      if (!clean) return new Uint8Array(0);
+      const binary = atob(clean);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    function prepareRejectedLink(base64Content, fileName) {
+      const bytes = base64ToBytes(base64Content);
+      if (!bytes.length) throw new Error('Empty rejected Excel content.');
+      const blob = new Blob(
+        [bytes],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      );
+      clearRejectedLink();
+      rejectedDownloadObjectUrl = URL.createObjectURL(blob);
+      if (downloadRejectedLink) {
+        downloadRejectedLink.href = rejectedDownloadObjectUrl;
+        downloadRejectedLink.download = String(fileName || 'rejected_rows.xlsx');
+      }
+    }
+
+    function showUploadOverlay() {
+      if (!overlayEl) return;
+      overlayEl.style.display = 'flex';
+    }
+
+    function hideUploadOverlay() {
+      if (!overlayEl) return;
+      overlayEl.style.display = 'none';
+    }
 
     document.getElementById("upload-excel-form").addEventListener("submit", async function (e) {
       e.preventDefault();
       const fd = new FormData(e.currentTarget);
+      const submitBtn = e.currentTarget ? e.currentTarget.querySelector('button[type="submit"]') : null;
+      if (submitBtn) submitBtn.disabled = true;
+      showUploadOverlay();
       try {
         const result = await apiFetch('/api/v1/user-tools/upload-excel', { method: 'POST', body: fd });
-        setMessage("upload-excel-msg", "ok", 'Upload complete. Total: ' + result.total_rows + ', inserted: ' + result.inserted + ', updated: ' + result.updated + ', skipped: ' + result.skipped);
+        const rejectedCount = Number((result && result.rejected_count) || 0);
+        const uploadedCount = Number(
+          (result && result.uploaded)
+          || ((Number(result && result.inserted) || 0) + (Number(result && result.updated) || 0))
+          || 0
+        );
+        setMessage(
+          "upload-excel-msg",
+          "ok",
+          'Upload complete. Total: ' + result.total_rows + ', uploaded: ' + uploadedCount + ', rejected: ' + rejectedCount
+        );
+        if (rejectedWrap && downloadRejectedLink) {
+          if (rejectedCount > 0) {
+            try {
+              prepareRejectedLink(
+                String(result && result.rejected_excel_base64 ? result.rejected_excel_base64 : ''),
+                String(result && result.rejected_excel_filename ? result.rejected_excel_filename : 'rejected_rows.xlsx')
+              );
+              rejectedWrap.style.display = '';
+            } catch (_linkErr) {
+              clearRejectedLink();
+              rejectedWrap.style.display = 'none';
+            }
+          } else {
+            clearRejectedLink();
+            rejectedWrap.style.display = 'none';
+          }
+        }
       } catch (err) {
+        if (rejectedWrap && downloadRejectedLink) {
+          clearRejectedLink();
+          rejectedWrap.style.display = 'none';
+        }
         setMessage("upload-excel-msg", "err", err.message);
+      } finally {
+        hideUploadOverlay();
+        if (submitBtn) submitBtn.disabled = false;
       }
     });
   }
@@ -5122,6 +5225,12 @@
       if (reportEditorClaimLabelEl) reportEditorClaimLabelEl.textContent = 'Claim ID: -';
     }
 
+    function normalizeHealthClaimReportTitle(html) {
+      const value = String(html || '');
+      if (!value) return '';
+      return value.replace(/HEALTH CLAIM INVESTIGATION REPORT/g, 'HEALTH CLAIM ASSESSMENT SHEET');
+    }
+
     function openAuditorQcWorkspace(row) {
       const claimUuid = String(row && row.claim_uuid ? row.claim_uuid : '').trim();
       const claimId = String(row && row.external_claim_id ? row.external_claim_id : '').trim();
@@ -5158,7 +5267,7 @@
 
       try {
         const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(claimUuid) + '/latest-html?source=' + encodeURIComponent(reportEditorCurrentSource));
-        const html = String(payload && payload.report_html ? payload.report_html : '').trim();
+        const html = normalizeHealthClaimReportTitle(String(payload && payload.report_html ? payload.report_html : '').trim());
         if (!html) {
           throw new Error('No saved report HTML found for this source.');
         }
@@ -5176,7 +5285,7 @@
       const claimUuid = String(row && row.claim_uuid ? row.claim_uuid : '').trim();
       if (!claimUuid || !reportEditorBodyEl) return;
 
-      const html = String(reportEditorBodyEl.innerHTML || '').trim();
+      const html = normalizeHealthClaimReportTitle(String(reportEditorBodyEl.innerHTML || '').trim());
       if (!html) {
         setReportEditorMessage('err', 'Report content is empty.');
         return;
@@ -5237,8 +5346,8 @@
         const src = sources[i];
         try {
           const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(id) + '/latest-html?source=' + encodeURIComponent(src));
-          const html = String(payload && payload.report_html ? payload.report_html : '').trim();
-          if (html) return payload;
+          const html = normalizeHealthClaimReportTitle(String(payload && payload.report_html ? payload.report_html : '').trim());
+          if (html) return Object.assign({}, payload || {}, { report_html: html });
         } catch (err) {
           lastErr = err;
         }
@@ -5251,7 +5360,7 @@
       const claimUuid = String(row.claim_uuid || '').trim();
       if (!claimUuid) return;
       const payload = await fetchBestSavedReport(claimUuid);
-      const html = String(payload && payload.report_html ? payload.report_html : '').trim();
+      const html = normalizeHealthClaimReportTitle(String(payload && payload.report_html ? payload.report_html : '').trim());
       if (!html) throw new Error('No saved report HTML found for this claim.');
       const wrapped = '<html><head><meta charset="UTF-8"><title>Claim Report</title></head><body>' + html + '</body></html>';
       const blob = new Blob([wrapped], { type: 'application/msword;charset=utf-8' });
@@ -5450,7 +5559,7 @@
       if (!claimUuid) return;
 
       const payload = await fetchBestSavedReport(claimUuid);
-      const html = String(payload && payload.report_html ? payload.report_html : '').trim();
+      const html = normalizeHealthClaimReportTitle(String(payload && payload.report_html ? payload.report_html : '').trim());
       if (!html) throw new Error('No saved report HTML found for this claim.');
 
       await ensurePdfLibraries();

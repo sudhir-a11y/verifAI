@@ -243,6 +243,12 @@
     return escapeHtml(String(value == null ? '' : value)).replace(/\r?\n/g, '<br>');
   }
 
+  function normalizeHealthClaimReportTitle(html) {
+    const value = String(html || '');
+    if (!value) return '';
+    return value.replace(/HEALTH CLAIM INVESTIGATION REPORT/g, 'HEALTH CLAIM ASSESSMENT SHEET');
+  }
+
   function buildStructuredFallbackReportHtml(data) {
     const payload = data && typeof data === 'object' ? data : {};
     const generatedAt = new Date().toLocaleString();
@@ -253,7 +259,7 @@
     }
 
     return '<div style="max-width:1100px;margin:0 auto;background:#fff;color:#111;padding:16px;">'
-      + '<h1 style="margin:0 0 10px 0;text-align:center;font-size:42px;line-height:1.2;font-weight:800;">HEALTH CLAIM INVESTIGATION REPORT</h1>'
+      + '<h1 style="margin:0 0 10px 0;text-align:center;font-size:42px;line-height:1.2;font-weight:800;">HEALTH CLAIM ASSESSMENT SHEET</h1>'
       + '<div style="text-align:right;color:#333;margin:0 0 12px 0;font-size:14px;">Generated: ' + escapeHtml(generatedAt) + ' | Doctor: -</div>'
       + '<table style="width:100%;border-collapse:collapse;table-layout:fixed;">'
       + row('COMPANY NAME', payload.company_name)
@@ -485,7 +491,7 @@
       const src = sources[i];
       try {
         const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=' + encodeURIComponent(src));
-        const html = String(payload && payload.report_html ? payload.report_html : '').trim();
+        const html = normalizeHealthClaimReportTitle(String(payload && payload.report_html ? payload.report_html : '').trim());
         if (html) {
           loadedSource = String(payload.report_source || src || 'doctor').toLowerCase();
           if (reportSourceEl) reportSourceEl.textContent = 'loaded source: ' + loadedSource;
@@ -745,7 +751,7 @@
   }
 
   async function saveDoctorHtml() {
-    const html = String(reportEditorEl ? reportEditorEl.innerHTML : '').trim();
+    const html = normalizeHealthClaimReportTitle(String(reportEditorEl ? reportEditorEl.innerHTML : '').trim());
     if (!html) throw new Error('Report content is empty.');
 
     const payload = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/reports/html', {

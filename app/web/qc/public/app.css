@@ -1856,3 +1856,27 @@ body.app-body.fullscreen-layout {
   border-color: #0a58ca !important;
   color: #ffffff !important;
 }
+
+/* Keep sortable table headers text-only (no solid button highlight) */
+.fullscreen-layout .table-sort-btn,
+.fullscreen-layout .table-sort-btn:hover,
+.fullscreen-layout .table-sort-btn:focus,
+.fullscreen-layout .table-sort-btn:focus-visible,
+.fullscreen-layout .table-sort-btn:active,
+.fullscreen-layout .table-sort-btn.is-active,
+.fullscreen-layout button.table-sort-btn,
+.fullscreen-layout button.table-sort-btn:hover,
+.fullscreen-layout button.table-sort-btn:focus,
+.fullscreen-layout button.table-sort-btn:focus-visible,
+.fullscreen-layout button.table-sort-btn:active,
+.fullscreen-layout button.table-sort-btn.is-active {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  color: inherit !important;
+  outline: none !important;
+  padding: 0 !important;
+  transform: none !important;
+}

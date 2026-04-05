@@ -1,13 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
 import threading
 from typing import Any
 
-import httpx
 
 from app.core.config import settings
+from app.services.llm_service import (
+    LLMServiceError,
+    call_openai_chat_completion,
+    parse_json_dict_from_text,
+)
 
 try:
     import language_tool_python
@@ -23,52 +27,6 @@ _LANGUAGE_TOOL_LOCK = threading.Lock()
 _LANGUAGE_TOOL_INSTANCE: Any | None = None
 _LANGUAGE_TOOL_PROVIDER = ""
 
-
-def _extract_openai_response_text(body: Any) -> str:
-    if not isinstance(body, dict):
-        return ""
-
-    msg = (((body.get("choices") or [{}])[0]).get("message") or {}) if isinstance(body.get("choices"), list) else {}
-    msg_content = msg.get("content") if isinstance(msg, dict) else ""
-    if isinstance(msg_content, str):
-        return msg_content.strip()
-    if isinstance(msg_content, list):
-        joined: list[str] = []
-        for item in msg_content:
-            if isinstance(item, dict):
-                t = item.get("text") or item.get("content")
-                if isinstance(t, str) and t.strip():
-                    joined.append(t.strip())
-        return "\n".join(joined).strip()
-    return ""
-
-
-def _parse_json_dict_from_text(raw_text: str) -> dict[str, Any] | None:
-    text_value = str(raw_text or "").strip()
-    if not text_value:
-        return None
-
-    if text_value.startswith("```"):
-        text_value = re.sub(r"^```(?:json)?\s*", "", text_value, flags=re.I)
-        text_value = re.sub(r"\s*```$", "", text_value)
-        text_value = text_value.strip()
-
-    try:
-        parsed = json.loads(text_value)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        pass
-
-    first = text_value.find("{")
-    last = text_value.rfind("}")
-    if first >= 0 and last > first:
-        candidate = text_value[first : last + 1]
-        try:
-            parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
-    return None
 
 
 def _normalize_model_name(raw_model: str | None) -> str:
@@ -178,13 +136,6 @@ def _run_grammar_batch_openai(segments: list[str]) -> tuple[list[str], str]:
     if not segments:
         return [], ""
 
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
     prompt = (
         "You are a medical-report grammar checker. "
         "Fix grammar, punctuation, and sentence flow only. "
@@ -193,43 +144,42 @@ def _run_grammar_batch_openai(segments: list[str]) -> tuple[list[str], str]:
         + json.dumps({"segments": segments}, ensure_ascii=False)
     )
 
-    model_candidates: list[str] = []
-    for candidate in [_normalize_model_name(settings.openai_model), "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]:
-        c = str(candidate or "").strip()
-        if c and c not in model_candidates:
-            model_candidates.append(c)
+    model_candidates = [
+        _normalize_model_name(settings.openai_model),
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "gpt-4o",
+    ]
 
     errors: list[str] = []
     for candidate in model_candidates:
-        request_payload = {
-            "model": candidate,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": "Return strict JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-        }
+        c = str(candidate or "").strip()
+        if not c:
+            continue
         try:
-            with httpx.Client(timeout=90.0) as client:
-                response = client.post(url, headers=headers, json=request_payload)
-                response.raise_for_status()
-            body = response.json()
-            used_model = str(body.get("model") or candidate)
-            raw_output = _extract_openai_response_text(body)
-            parsed = _parse_json_dict_from_text(raw_output)
+            result = call_openai_chat_completion(
+                model=c,
+                system_prompt="Return strict JSON only.",
+                user_prompt=prompt,
+                timeout_seconds=90.0,
+                response_format_json=True,
+            )
+            parsed = parse_json_dict_from_text(result.output_text)
             if not isinstance(parsed, dict):
-                errors.append(f"{candidate}: invalid_json")
+                errors.append(f"{c}: invalid_json")
                 continue
             corrected = parsed.get("segments")
             if not isinstance(corrected, list) or len(corrected) != len(segments):
-                errors.append(f"{candidate}: invalid_segments")
+                errors.append(f"{c}: invalid_segments")
                 continue
-            return [str(x or "") for x in corrected], used_model
+            return [str(x or "") for x in corrected], result.used_model
+        except LLMServiceError as exc:
+            errors.append(f"{c}: {exc}")
         except Exception as exc:
-            errors.append(f"{candidate}: {exc}")
+            errors.append(f"{c}: {exc}")
 
-    raise GrammarCheckError(f"Grammar check failed. models_tried={model_candidates}; errors={errors[:3] or ['unknown']}")
-
+    preview_errors = errors[:3] or ["unknown"]
+    raise GrammarCheckError(f"Grammar check failed. models_tried={model_candidates}; errors={preview_errors}")
 
 def grammar_check_report_html(report_html: str) -> dict[str, Any]:
     html = str(report_html or "")
@@ -319,3 +269,4 @@ def grammar_check_report_html(report_html: str) -> dict[str, Any]:
         "model": primary_model,
         "notes": f"Grammar check completed using {provider_used or 'unknown'}.",
     }
+
