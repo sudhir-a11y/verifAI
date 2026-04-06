@@ -12,8 +12,8 @@ from app.domain.extractions.use_cases import (
 )
 from app.schemas.auth import UserRole
 from app.schemas.extraction import ExtractionListResponse, ExtractionResponse, RunExtractionRequest
-from app.services.access_control import doctor_can_access_document
-from app.services.auth_service import AuthenticatedUser
+from app.dependencies.access_control import doctor_can_access_document
+from app.domain.auth.service import AuthenticatedUser
 from app.ai.extraction import ExtractionConfigError, ExtractionProcessingError
 from app.infrastructure.storage.storage_service import StorageConfigError, StorageOperationError
 

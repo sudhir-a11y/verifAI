@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tesseract *)",
+      "Bash(sudo *)",
+      "Bash(.venv/bin/pytest *)"
+    ]
+  },
+  "$version": 3
+}

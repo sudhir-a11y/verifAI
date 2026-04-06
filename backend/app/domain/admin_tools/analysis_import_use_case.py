@@ -6,7 +6,7 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session
 
 from app.domain.admin_tools.analysis_import_service import import_analysis_results_from_rows
-from app.services.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
+from app.infrastructure.parsers.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
 
 
 @dataclass(frozen=True)

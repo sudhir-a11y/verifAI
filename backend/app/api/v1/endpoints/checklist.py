@@ -13,8 +13,8 @@ from app.domain.checklist.checklist_use_cases import (
 from app.domain.checklist.ml_use_cases import generate_alignment_labels, train_checklist_model
 from app.schemas.auth import UserRole
 from app.schemas.checklist import ChecklistLatestResponse, ChecklistRunRequest, ChecklistRunResponse
-from app.services.access_control import doctor_can_access_claim
-from app.services.auth_service import AuthenticatedUser
+from app.dependencies.access_control import doctor_can_access_claim
+from app.domain.auth.service import AuthenticatedUser
 
 router = APIRouter(tags=["checklist"])
 
@@ -109,4 +109,3 @@ def generate_alignment_labels_endpoint(
         "generated_by": current_user.username,
         **summary,
     }
-

@@ -139,6 +139,29 @@ class Settings(BaseSettings):
         ),
     )
 
+    # 🎯 Phase 0: Hybrid OCR Configuration (PaddleOCR + OpenAI + Textract + Tesseract)
+    # OpenAI model for handwriting interpretation (prescriptions)
+    openai_vision_model: str = Field(
+        default="gpt-5.1",
+        validation_alias=AliasChoices("OPENAI_VISION_MODEL"),
+    )
+    paddle_model_type: str = Field(
+        default="v3",
+        validation_alias=AliasChoices("PADDLE_MODEL_TYPE"),
+    )
+    tesseract_cmd_path: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TESSERACT_CMD_PATH"),
+    )
+    ocr_confidence_threshold: float = Field(
+        default=0.6,
+        validation_alias=AliasChoices("OCR_CONFIDENCE_THRESHOLD"),
+    )
+    ocr_page_limit: int = Field(
+        default=50,
+        validation_alias=AliasChoices("OCR_PAGE_LIMIT"),
+    )
+
     auth_session_hours: int = Field(
         default=12,
         validation_alias=AliasChoices("AUTH_SESSION_HOURS"),

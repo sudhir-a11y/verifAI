@@ -68,15 +68,15 @@ from app.schemas.qc_tools import (
     CompletedReportUploadStatusResponse,
     ExcelImportResponse,
 )
-from app.services.auth_service import AuthenticatedUser
+from app.domain.auth.service import AuthenticatedUser
 from app.ml import (
     AUDITOR_QC_LABEL_TYPE,
     MODEL_KEY,
     ensure_model,
     upsert_feedback_label,
 )
-from app.services.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
-from app.services.access_control import doctor_matches_assignment
+from app.infrastructure.parsers.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
+from app.dependencies.access_control import doctor_matches_assignment
 
 router = APIRouter(prefix="/user-tools", tags=["user-tools"])
 

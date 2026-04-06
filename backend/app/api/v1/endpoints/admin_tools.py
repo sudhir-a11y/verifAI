@@ -53,7 +53,7 @@ from app.schemas.qc_tools import (
     MedicineUpsertRequest,
     SuggestionReviewRequest,
 )
-from app.services.auth_service import AuthenticatedUser
+from app.domain.auth.service import AuthenticatedUser
 
 router = APIRouter(prefix="/admin", tags=["admin-tools"])
 
@@ -370,4 +370,3 @@ async def import_analysis_sql_dump_endpoint(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"analysis SQL import failed: {exc}") from exc
-

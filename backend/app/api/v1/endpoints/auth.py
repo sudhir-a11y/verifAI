@@ -33,7 +33,7 @@ from app.schemas.auth import (
     UserRole,
 )
 from app.schemas.qc_tools import ResetUserPasswordRequest
-from app.services.auth_service import (
+from app.domain.auth.service import (
     AuthenticationError,
     AuthenticatedUser,
     UserAlreadyExistsError,
@@ -199,4 +199,3 @@ def change_password_endpoint(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-

@@ -37,8 +37,8 @@ from app.schemas.claim import (
     CreateClaimRequest,
 )
 from app.schemas.extraction import ExtractionProvider
-from app.services.access_control import doctor_matches_assignment
-from app.services.auth_service import AuthenticatedUser
+from app.dependencies.access_control import doctor_matches_assignment
+from app.domain.auth.service import AuthenticatedUser
 from app.ai.structuring import (
     ClaimStructuredDataNotFoundError,
     ClaimStructuringError,

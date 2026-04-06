@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.schemas.auth import UserRole
 from app.schemas.qc_tools import CompletedReportLatestHtmlResponse
-from app.services.access_control import doctor_matches_assignment
+from app.dependencies.access_control import doctor_matches_assignment
 from app.repositories import claims_repo, decision_results_repo, report_versions_repo
 
 
@@ -89,4 +89,3 @@ __all__ = [
     "ReportNotFoundError",
     "get_completed_report_latest_html",
 ]
-

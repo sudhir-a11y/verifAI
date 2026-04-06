@@ -10,6 +10,7 @@ class ExtractionProvider(str, Enum):
     local = "local"
     openai = "openai"
     aws_textract = "aws_textract"
+    hybrid_local = "hybrid_local"
 
 
 class RunExtractionRequest(BaseModel):

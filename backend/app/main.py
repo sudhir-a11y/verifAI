@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.services.medicine_rectify_scheduler import medicine_rectify_scheduler
+from app.infrastructure.scheduler.medicine_rectify_scheduler import medicine_rectify_scheduler
 
 app = FastAPI(title=settings.app_name)
 

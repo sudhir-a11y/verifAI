@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.auth import UserRole
-from app.services.auth_service import AuthenticatedUser, get_user_by_token
+from app.domain.auth.service import AuthenticatedUser, get_user_by_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

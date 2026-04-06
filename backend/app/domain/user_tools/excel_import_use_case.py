@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.repositories import claim_legacy_data_repo, claim_report_uploads_repo, claims_repo
-from app.services.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
+from app.infrastructure.parsers.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
 
 
 _EMPTY_LIKE_TEXT_VALUES = {
@@ -234,4 +234,3 @@ def import_claims_from_excel_payload(
 
 
 __all__ = ["import_claims_from_excel_payload"]
-

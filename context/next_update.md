@@ -13,6 +13,8 @@ This file is the single “what’s done vs what’s next” tracker for the bac
 - AI layer separation: **100%**
 - ML layer separation: **100%** (ML code lives under `app/ml`; no internal callers import via shims)
 - Workflows formalization: **100%** (claim pipeline + checklist pipeline orchestration now live under `app/workflows/*`)
+- Services cleanup: **100%** for remaining helpers (moved to `dependencies/`, `domain/`, and `infrastructure/` with shims left for backward compatibility)
+- `backend/app/main.py` now imports scheduler directly from `backend/app/infrastructure/scheduler/medicine_rectify_scheduler.py:1` (no direct `app.services.*` imports remain in `backend/app/*`).
 
 ---
 

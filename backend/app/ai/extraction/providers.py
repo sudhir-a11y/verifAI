@@ -9,10 +9,15 @@ from typing import Any
 import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
+from PIL import Image
 from pypdf import PdfReader
 
 from app.ai.openai_chat import OpenAIChatError, chat_completions
-from app.ai.openai_responses import OpenAIResponsesError, extract_responses_text, responses_create
+from app.ai.openai_responses import (
+    OpenAIResponsesError,
+    extract_responses_text,
+    responses_create,
+)
 from app.core.config import settings
 from app.schemas.extraction import ExtractionProvider
 
@@ -153,6 +158,7 @@ def _parse_json_payload(raw: Any) -> dict[str, Any] | None:
                 return None
     return None
 
+
 def _normalize_evidence_refs(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
@@ -176,7 +182,6 @@ def _normalize_evidence_refs(raw: Any) -> list[dict[str, Any]]:
             }
         )
     return normalized
-
 
 
 def _normalize_lookup_key(value: Any) -> str:
@@ -250,9 +255,15 @@ def _looks_like_billing_or_rate_text(value: Any) -> bool:
     low = text.lower()
     if re.search(r"\b(?:rupees?|inr|rs\.?)\b", low):
         return True
-    if re.search(r"\b(?:bill(?:ing)?|invoice|receipt|cash|discount|paid|payment|charges?|rate|price)\b", low):
+    if re.search(
+        r"\b(?:bill(?:ing)?|invoice|receipt|cash|discount|paid|payment|charges?|rate|price)\b",
+        low,
+    ):
         return True
-    if re.search(r"\b(?:total\s*(?:bill|amount|sum|payment)|final\s*payment|amount\s*claimed|claim(?:ed)?\s*amount)\b", low):
+    if re.search(
+        r"\b(?:total\s*(?:bill|amount|sum|payment)|final\s*payment|amount\s*claimed|claim(?:ed)?\s*amount)\b",
+        low,
+    ):
         return True
     if re.search(r"\bvalue\s*:\s*\d+(?:\.\d+)?\s*(?:rupees?|inr|rs\.?)\b", low):
         return True
@@ -264,26 +275,67 @@ def _looks_like_hospital_address_text(value: Any) -> bool:
     if not text:
         return False
     low = text.lower()
-    if re.search(r"\b(?:hospital\s*address|full\s*postal\s*address|address\s*of\s*hospital|hospital\s*addr(?:ess)?)\b", low):
+    if re.search(
+        r"\b(?:hospital\s*address|full\s*postal\s*address|address\s*of\s*hospital|hospital\s*addr(?:ess)?)\b",
+        low,
+    ):
         return True
     if re.search(r"^(?:add(?:ress)?\s*[:\-])", low):
         return True
 
     address_tokens = (
-        "road", "rd", "street", "st", "lane", "ln", "nagar", "colony", "city",
-        "district", "state", "pin", "pincode", "zip", "plot", "floor", "building",
-        "plaza", "near", "opp", "opposite", "shop", "apartment", "apt", "flat",
-        "unit", "society", "chsl", "complex", "tower", "wing", "sector", "block",
-        "east", "west", "north", "south", "taluka", "tehsil",
+        "road",
+        "rd",
+        "street",
+        "st",
+        "lane",
+        "ln",
+        "nagar",
+        "colony",
+        "city",
+        "district",
+        "state",
+        "pin",
+        "pincode",
+        "zip",
+        "plot",
+        "floor",
+        "building",
+        "plaza",
+        "near",
+        "opp",
+        "opposite",
+        "shop",
+        "apartment",
+        "apt",
+        "flat",
+        "unit",
+        "society",
+        "chsl",
+        "complex",
+        "tower",
+        "wing",
+        "sector",
+        "block",
+        "east",
+        "west",
+        "north",
+        "south",
+        "taluka",
+        "tehsil",
     )
     token_hits = 0
     for tok in address_tokens:
         if re.search(rf"\b{re.escape(tok)}\b", low):
             token_hits += 1
 
-    if re.search(r"\b(?:shop|apartment|apt|flat|unit)\s*no\.?\s*\d+\b", low) and re.search(r"\b\d{6}\b", low):
+    if re.search(
+        r"\b(?:shop|apartment|apt|flat|unit)\s*no\.?\s*\d+\b", low
+    ) and re.search(r"\b\d{6}\b", low):
         return True
-    if token_hits >= 2 and (re.search(r"\d{3,}", low) or re.search(r"\b(?:pin|pincode|zip)\b", low)):
+    if token_hits >= 2 and (
+        re.search(r"\d{3,}", low) or re.search(r"\b(?:pin|pincode|zip)\b", low)
+    ):
         return True
     if token_hits >= 1 and low.count(",") >= 2 and re.search(r"\b\d{6}\b", low):
         return True
@@ -317,11 +369,17 @@ def _clean_clinical_findings_text(value: Any) -> str:
             continue
         if _looks_like_hospital_address_text(t):
             continue
-        if re.search(r"\b(?:follow\s*up(?:\s*to)?|review\s+after|in\s+case\s+of\s+emergency|call\s+us|contact\s*(?:us|no)?|helpline|mobile(?:\s*number)?|phone(?:\s*number)?)\b", low):
+        if re.search(
+            r"\b(?:follow\s*up(?:\s*to)?|review\s+after|in\s+case\s+of\s+emergency|call\s+us|contact\s*(?:us|no)?|helpline|mobile(?:\s*number)?|phone(?:\s*number)?)\b",
+            low,
+        ):
             continue
         if re.search(r"(?:\+?91[\s\-]*)?[6-9]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}\b", low):
             continue
-        if re.search(r"^(patient\s*name|name\s*of\s*the\s*establishment|hospital\s*address|full\s*postal\s*address|add\s*:|admit(?:ting|ing)\s*dr|consultant\s*name)\b", low):
+        if re.search(
+            r"^(patient\s*name|name\s*of\s*the\s*establishment|hospital\s*address|full\s*postal\s*address|add\s*:|admit(?:ting|ing)\s*dr|consultant\s*name)\b",
+            low,
+        ):
             continue
         lines.append(t)
     seen: set[str] = set()
@@ -338,9 +396,34 @@ def _clean_clinical_findings_text(value: Any) -> str:
 def _extract_hospital_address_from_lines(lines: list[str], start_idx: int) -> str:
     out: list[str] = []
     address_tokens = (
-        "road", "rd", "street", "st", "lane", "ln", "nagar", "colony", "city", "district", "state",
-        "pin", "pincode", "zip", "plot", "floor", "building", "plaza", "near", "above", "hyderabad",
-        "mumbai", "delhi", "bengaluru", "bangalore", "chennai", "pune", "kolkata",
+        "road",
+        "rd",
+        "street",
+        "st",
+        "lane",
+        "ln",
+        "nagar",
+        "colony",
+        "city",
+        "district",
+        "state",
+        "pin",
+        "pincode",
+        "zip",
+        "plot",
+        "floor",
+        "building",
+        "plaza",
+        "near",
+        "above",
+        "hyderabad",
+        "mumbai",
+        "delhi",
+        "bengaluru",
+        "bangalore",
+        "chennai",
+        "pune",
+        "kolkata",
     )
     for idx in range(start_idx, min(start_idx + 4, len(lines))):
         line = str(lines[idx] or "").strip(" -:\t")
@@ -349,7 +432,11 @@ def _extract_hospital_address_from_lines(lines: list[str], start_idx: int) -> st
         low = line.lower()
         if idx > start_idx and re.match(r"^[A-Za-z ]{2,40}\s*[:\-]", line):
             break
-        if idx == start_idx or any(tok in low for tok in address_tokens) or bool(re.search(r"\d{3,}", low)):
+        if (
+            idx == start_idx
+            or any(tok in low for tok in address_tokens)
+            or bool(re.search(r"\d{3,}", low))
+        ):
             out.append(line)
         else:
             break
@@ -368,9 +455,15 @@ def _normalize_investigation_reports(raw: Any) -> list[dict[str, Any]]:
                     or item.get("parameter")
                     or item.get("investigation")
                 )
-                value = _to_text(item.get("value") or item.get("result") or item.get("finding"))
+                value = _to_text(
+                    item.get("value") or item.get("result") or item.get("finding")
+                )
                 unit = _to_text(item.get("unit"))
-                reference_range = _to_text(item.get("reference_range") or item.get("range") or item.get("normal_range"))
+                reference_range = _to_text(
+                    item.get("reference_range")
+                    or item.get("range")
+                    or item.get("normal_range")
+                )
                 flag = _to_text(item.get("flag") or item.get("status"))
                 observed_at = _to_text(item.get("date") or item.get("observed_at"))
 
@@ -509,7 +602,9 @@ def _extract_focus_fields_from_text(text: str) -> dict[str, Any]:
                 if len(line) <= 220:
                     hospital_name = line.strip(" -:\t")
                     if not hospital_address:
-                        hospital_address = _extract_hospital_address_from_lines(lines, idx + 1)
+                        hospital_address = _extract_hospital_address_from_lines(
+                            lines, idx + 1
+                        )
                     break
 
     if not hospital_address:
@@ -524,25 +619,80 @@ def _extract_focus_fields_from_text(text: str) -> dict[str, Any]:
     bill_amount = _extract_bill_amount_from_text(src)
 
     investigation_tokens = (
-        "hb", "hgb", "hemoglobin", "wbc", "rbc", "platelet", "mcv", "mch", "mchc", "rdw",
-        "creatinine", "urea", "bun", "sodium", "potassium", "bilirubin", "sgot", "sgpt", "alt", "ast",
-        "test", "lab", "investigation", "culture", "urine", "x-ray", "ct", "mri",
+        "hb",
+        "hgb",
+        "hemoglobin",
+        "wbc",
+        "rbc",
+        "platelet",
+        "mcv",
+        "mch",
+        "mchc",
+        "rdw",
+        "creatinine",
+        "urea",
+        "bun",
+        "sodium",
+        "potassium",
+        "bilirubin",
+        "sgot",
+        "sgpt",
+        "alt",
+        "ast",
+        "test",
+        "lab",
+        "investigation",
+        "culture",
+        "urine",
+        "x-ray",
+        "ct",
+        "mri",
     )
     clinical_tokens = (
-        "complaint", "complaints", "symptom", "symptoms", "admitted", "admission", "finding", "findings",
-        "history", "examination", "treated", "treatment", "diagnosis", "diagnosed",
+        "complaint",
+        "complaints",
+        "symptom",
+        "symptoms",
+        "admitted",
+        "admission",
+        "finding",
+        "findings",
+        "history",
+        "examination",
+        "treated",
+        "treatment",
+        "diagnosis",
+        "diagnosed",
     )
-    conclusion_tokens = ("conclusion", "recommendation", "opinion", "summary", "final", "decision")
+    conclusion_tokens = (
+        "conclusion",
+        "recommendation",
+        "opinion",
+        "summary",
+        "final",
+        "decision",
+    )
 
     for line in lines:
         low = line.lower()
         has_number = bool(re.search(r"\d", line))
 
-        if any(tok in low for tok in clinical_tokens) and not _looks_like_billing_or_rate_text(line):
+        if any(
+            tok in low for tok in clinical_tokens
+        ) and not _looks_like_billing_or_rate_text(line):
             clinical.append(line)
 
-        has_result_word = bool(re.search(r"\\b(positive|negative|reactive|non-reactive|detected|not detected)\\b", low))
-        if any(tok in low for tok in investigation_tokens) and (has_number or has_result_word) and not _looks_like_billing_or_rate_text(line):
+        has_result_word = bool(
+            re.search(
+                r"\\b(positive|negative|reactive|non-reactive|detected|not detected)\\b",
+                low,
+            )
+        )
+        if (
+            any(tok in low for tok in investigation_tokens)
+            and (has_number or has_result_word)
+            and not _looks_like_billing_or_rate_text(line)
+        ):
             investigations.append(
                 {
                     "test_name": "",
@@ -614,7 +764,10 @@ def _extract_focus_fields_from_text(text: str) -> dict[str, Any]:
     in_med_section = False
     for line in lines:
         low = line.lower()
-        if re.search(r"\b(treatment\s+medicines?|medications?|prescriptions?|drug\s+chart|rx)\b", low):
+        if re.search(
+            r"\b(treatment\s+medicines?|medications?|prescriptions?|drug\s+chart|rx)\b",
+            low,
+        ):
             in_med_section = True
             continue
         if in_med_section and re.match(r"^[A-Z][A-Z\s\/-]{6,}$", line):
@@ -656,13 +809,24 @@ def _extract_focus_fields_from_text(text: str) -> dict[str, Any]:
         "all_investigation_reports_with_values": investigations,
         "detailed_conclusion": detailed_conclusion,
     }
-def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") -> dict[str, Any]:
+
+
+def _normalize_extracted_entities(
+    raw_entities: Any, fallback_text: str = ""
+) -> dict[str, Any]:
     entities = raw_entities if isinstance(raw_entities, dict) else {}
     normalized = dict(entities)
 
     name_value = _find_entity_value(
         entities,
-        ["name", "patient_name", "patient", "insured", "beneficiary", "policy_holder_name"],
+        [
+            "name",
+            "patient_name",
+            "patient",
+            "insured",
+            "beneficiary",
+            "policy_holder_name",
+        ],
     )
     diagnosis_value = _find_entity_value(
         entities,
@@ -670,7 +834,14 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
     )
     clinical_findings_value = _find_entity_value(
         entities,
-        ["clinical_findings", "finding", "findings", "major_diagnostic_finding", "hospital_finding", "summary"],
+        [
+            "clinical_findings",
+            "finding",
+            "findings",
+            "major_diagnostic_finding",
+            "hospital_finding",
+            "summary",
+        ],
     )
     investigations_value = _find_entity_value(
         entities,
@@ -685,32 +856,80 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
     )
     detailed_conclusion_value = _find_entity_value(
         entities,
-        ["detailed_conclusion", "conclusion", "recommendation", "decision", "rationale"],
+        [
+            "detailed_conclusion",
+            "conclusion",
+            "recommendation",
+            "decision",
+            "rationale",
+        ],
     )
     hospital_name_value = _find_entity_value(
         entities,
-        ["hospital_name", "hospital", "treating_hospital", "provider_hospital", "hospital_city_name"],
+        [
+            "hospital_name",
+            "hospital",
+            "treating_hospital",
+            "provider_hospital",
+            "hospital_city_name",
+        ],
     )
     hospital_address_value = _find_entity_value(
         entities,
-        ["hospital_address", "hospital_addr", "address_of_hospital", "hospital_full_address", "provider_hospital_address"],
+        [
+            "hospital_address",
+            "hospital_addr",
+            "address_of_hospital",
+            "hospital_full_address",
+            "provider_hospital_address",
+        ],
     )
     bill_amount_value = _find_entity_value(
         entities,
-        ["bill_amount", "claim_amount", "claimed_amount", "amount_claimed", "total_bill", "invoice_amount", "net_payable"],
+        [
+            "bill_amount",
+            "claim_amount",
+            "claimed_amount",
+            "amount_claimed",
+            "total_bill",
+            "invoice_amount",
+            "net_payable",
+        ],
     )
 
     treating_doctor_value = _find_entity_value(
         entities,
-        ["treating_doctor", "treating_doctor_name", "doctor_name", "attending_doctor", "consultant_doctor", "admit_doctor"],
+        [
+            "treating_doctor",
+            "treating_doctor_name",
+            "doctor_name",
+            "attending_doctor",
+            "consultant_doctor",
+            "admit_doctor",
+        ],
     )
     doctor_registration_value = _find_entity_value(
         entities,
-        ["doctor_registration_number", "treating_doctor_registration_number", "registration_no", "registration_number", "mci_reg_no", "nmc_reg_no"],
+        [
+            "doctor_registration_number",
+            "treating_doctor_registration_number",
+            "registration_no",
+            "registration_number",
+            "mci_reg_no",
+            "nmc_reg_no",
+        ],
     )
     medicine_used_value = _find_entity_value(
         entities,
-        ["medicine_used", "medicines", "medications", "treatment_medicines", "drug_chart", "prescription", "rx"],
+        [
+            "medicine_used",
+            "medicines",
+            "medications",
+            "treatment_medicines",
+            "drug_chart",
+            "prescription",
+            "rx",
+        ],
     )
     name_text = _to_text(name_value)
     diagnosis_text = _to_text(diagnosis_value)
@@ -730,11 +949,17 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
     if not diagnosis_text:
         diagnosis_text = _to_text(heuristic.get("diagnosis"))
     if not clinical_findings_text:
-        clinical_findings_text = _clean_clinical_findings_text(heuristic.get("clinical_findings"))
+        clinical_findings_text = _clean_clinical_findings_text(
+            heuristic.get("clinical_findings")
+        )
     if not investigation_rows:
-        investigation_rows = _normalize_investigation_reports(heuristic.get("all_investigation_reports_with_values"))
+        investigation_rows = _normalize_investigation_reports(
+            heuristic.get("all_investigation_reports_with_values")
+        )
     if not detailed_conclusion_text:
-        detailed_conclusion_text = _to_text(heuristic.get("detailed_conclusion")) or _to_text(fallback_text)
+        detailed_conclusion_text = _to_text(
+            heuristic.get("detailed_conclusion")
+        ) or _to_text(fallback_text)
     if not hospital_name_text:
         hospital_name_text = _clean_hospital_name_text(heuristic.get("hospital_name"))
     if not hospital_address_text:
@@ -751,11 +976,15 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
     name_text = _sanitize_person_name(name_text)
 
     normalized["name"] = name_text
-    normalized["patient_name"] = name_text or _sanitize_person_name(_to_text(entities.get("patient_name")))
+    normalized["patient_name"] = name_text or _sanitize_person_name(
+        _to_text(entities.get("patient_name"))
+    )
     normalized["diagnosis"] = diagnosis_text
     normalized["clinical_findings"] = clinical_findings_text
     normalized["all_investigation_reports_with_values"] = investigation_rows
-    normalized["all_investigation_report_lines"] = [row.get("line", "") for row in investigation_rows if row.get("line")]
+    normalized["all_investigation_report_lines"] = [
+        row.get("line", "") for row in investigation_rows if row.get("line")
+    ]
     normalized["detailed_conclusion"] = detailed_conclusion_text
     normalized["hospital_name"] = hospital_name_text
     normalized["hospital_address"] = hospital_address_text
@@ -793,7 +1022,9 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
         or normalized.get("detailed_conclusion")
     )
     if not focused_has_content:
-        normalized["detailed_conclusion"] = "No relevant medical details extracted from this document."
+        normalized["detailed_conclusion"] = (
+            "No relevant medical details extracted from this document."
+        )
     return normalized
 
 
@@ -805,6 +1036,7 @@ def _extract_openai_response_text(body: Any) -> str:
         return text
     # Fallback to /chat/completions format
     from app.ai.openai_chat import extract_message_text
+
     return extract_message_text(body)
 
 
@@ -824,7 +1056,9 @@ def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
     clinical_lines: list[str] = []
     investigation_lines: list[str] = []
 
-    m = re.search(r"Was\s+Hospital\s+Admission\s+Medically\s+Required\?\s*(YES|NO)", text, re.I)
+    m = re.search(
+        r"Was\s+Hospital\s+Admission\s+Medically\s+Required\?\s*(YES|NO)", text, re.I
+    )
     if m:
         v = (m.group(1) or "").strip().upper()
         if v == "YES":
@@ -838,11 +1072,17 @@ def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
     if m_doctor:
         treating_doctor = (m_doctor.group(0) or "").strip()
 
-    m_name = re.search(r"(?:patient\s*name|insured|beneficiary)\s*[:\-]\s*([^\n\r]{2,120})", text, re.I)
+    m_name = re.search(
+        r"(?:patient\s*name|insured|beneficiary)\s*[:\-]\s*([^\n\r]{2,120})", text, re.I
+    )
     if m_name:
         patient_name = (m_name.group(1) or "").strip()
 
-    m_diag = re.search(r"(?:diagnosis|final\s*diagnosis|provisional\s*diagnosis)\s*[:\-]\s*([^\n\r]{2,220})", text, re.I)
+    m_diag = re.search(
+        r"(?:diagnosis|final\s*diagnosis|provisional\s*diagnosis)\s*[:\-]\s*([^\n\r]{2,220})",
+        text,
+        re.I,
+    )
     if m_diag:
         diagnosis = (m_diag.group(1) or "").strip()
 
@@ -864,12 +1104,20 @@ def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
                 clinical_lines.append(snippet)
             continue
 
-        if re.search(r"\b(Hb|WBC|RBC|Platelet|MCV|MCH|MCHC|RDW|BUN|Creatinine|glucose|sodium|potassium|ALT|AST)\b", l, re.I):
+        if re.search(
+            r"\b(Hb|WBC|RBC|Platelet|MCV|MCH|MCHC|RDW|BUN|Creatinine|glucose|sodium|potassium|ALT|AST)\b",
+            l,
+            re.I,
+        ):
             investigation_lines.append(l)
             evidence_lines.append(l)
             continue
 
-        if re.search(r"\b(LOW|HIGH|ELEVATED|DECREASED|ABNORMAL|DERANGED|THROMBOCYTOPENIA|RISK|PRETERM|LOW BIRTH WEIGHT)\b", l, re.I):
+        if re.search(
+            r"\b(LOW|HIGH|ELEVATED|DECREASED|ABNORMAL|DERANGED|THROMBOCYTOPENIA|RISK|PRETERM|LOW BIRTH WEIGHT)\b",
+            l,
+            re.I,
+        ):
             evidence_lines.append(l)
             clinical_lines.append(l)
             continue
@@ -904,7 +1152,9 @@ def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
         "bill_amount": bill_amount,
         "claim_amount": bill_amount,
         "clinical_findings": "\n".join(dedup_clinical),
-        "all_investigation_reports_with_values": [{"line": line} for line in dedup_investigations],
+        "all_investigation_reports_with_values": [
+            {"line": line} for line in dedup_investigations
+        ],
         "detailed_conclusion": text,
         "rationale": text,
         "missing_information": dedup_missing,
@@ -920,6 +1170,7 @@ def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
         ],
         "confidence": confidence,
     }
+
 
 def _decode_text(payload: bytes) -> str:
     try:
@@ -943,13 +1194,19 @@ def _extract_pdf_text(payload: bytes) -> str:
     return "\n\n".join(chunks)
 
 
-def _extract_text_with_ocr_space(document_name: str, mime_type: str, payload: bytes) -> str:
+def _extract_text_with_ocr_space(
+    document_name: str, mime_type: str, payload: bytes
+) -> str:
     if not settings.ocr_space_api_key:
         return ""
 
     def run_ocr(engine: int) -> tuple[str, str]:
         files = {
-            "file": (document_name or "document", payload, mime_type or "application/octet-stream"),
+            "file": (
+                document_name or "document",
+                payload,
+                mime_type or "application/octet-stream",
+            ),
         }
         data = {
             "apikey": settings.ocr_space_api_key,
@@ -961,14 +1218,20 @@ def _extract_text_with_ocr_space(document_name: str, mime_type: str, payload: by
 
         try:
             with httpx.Client(timeout=90.0) as client:
-                response = client.post(settings.ocr_space_endpoint, files=files, data=data)
+                response = client.post(
+                    settings.ocr_space_endpoint, files=files, data=data
+                )
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ExtractionProcessingError(f"OCR request failed: {exc}") from exc
 
         body = response.json()
         if body.get("IsErroredOnProcessing"):
-            error_msg = body.get("ErrorMessage") or body.get("ErrorDetails") or "OCR processing error"
+            error_msg = (
+                body.get("ErrorMessage")
+                or body.get("ErrorDetails")
+                or "OCR processing error"
+            )
             return "", str(error_msg)
 
         parsed_results = body.get("ParsedResults") or []
@@ -1009,7 +1272,9 @@ def _looks_like_text_mime(mime_type: str) -> bool:
     }
 
 
-def _normalize_document_text(document_name: str, mime_type: str, payload: bytes) -> tuple[str, str]:
+def _normalize_document_text(
+    document_name: str, mime_type: str, payload: bytes
+) -> tuple[str, str]:
     lower_name = (document_name or "").lower()
     lower_mime = (mime_type or "").lower()
     is_pdf = lower_mime == "application/pdf" or lower_name.endswith(".pdf")
@@ -1020,13 +1285,17 @@ def _normalize_document_text(document_name: str, mime_type: str, payload: bytes)
     # Prefer OCR Space for image/PDF documents so OCR_SPACE_ENDPOINT is actively used.
     if is_image or is_pdf:
         try:
-            ocr_text = _extract_text_with_ocr_space(document_name, mime_type, payload).strip()
+            ocr_text = _extract_text_with_ocr_space(
+                document_name, mime_type, payload
+            ).strip()
             if ocr_text:
                 return ocr_text, "ocr-space"
         except ExtractionProcessingError:
             pass
 
-    if _looks_like_text_mime(lower_mime) or lower_name.endswith((".txt", ".csv", ".json", ".xml")):
+    if _looks_like_text_mime(lower_mime) or lower_name.endswith(
+        (".txt", ".csv", ".json", ".xml")
+    ):
         text = _decode_text(payload).strip()
         if text:
             return text, "text-decode"
@@ -1049,8 +1318,12 @@ def _build_textract_client():
         or str(settings.s3_region or "").strip()
         or "ap-south-1"
     )
-    access_key = str(settings.aws_textract_access_key_id or settings.s3_access_key or "").strip()
-    secret_key = str(settings.aws_textract_secret_access_key or settings.s3_secret_key or "").strip()
+    access_key = str(
+        settings.aws_textract_access_key_id or settings.s3_access_key or ""
+    ).strip()
+    secret_key = str(
+        settings.aws_textract_secret_access_key or settings.s3_secret_key or ""
+    ).strip()
     session_token = str(settings.aws_textract_session_token or "").strip()
     endpoint_url = str(settings.aws_textract_endpoint_url or "").strip()
 
@@ -1066,7 +1339,9 @@ def _build_textract_client():
     try:
         return boto3.client("textract", **kwargs)
     except Exception as exc:
-        raise ExtractionConfigError(f"AWS Textract client configuration failed: {exc}") from exc
+        raise ExtractionConfigError(
+            f"AWS Textract client configuration failed: {exc}"
+        ) from exc
 
 
 def _textract_requires_async(document_name: str, mime_type: str) -> bool:
@@ -1117,9 +1392,13 @@ def _extract_text_with_textract_async_s3(
             DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}}
         )
     except (ClientError, BotoCoreError) as exc:
-        raise ExtractionProcessingError(f"AWS Textract async start failed: {exc}") from exc
+        raise ExtractionProcessingError(
+            f"AWS Textract async start failed: {exc}"
+        ) from exc
     except Exception as exc:
-        raise ExtractionProcessingError(f"AWS Textract async start failed: {exc}") from exc
+        raise ExtractionProcessingError(
+            f"AWS Textract async start failed: {exc}"
+        ) from exc
 
     job_id = str(start.get("JobId") or "").strip()
     if not job_id:
@@ -1140,9 +1419,13 @@ def _extract_text_with_textract_async_s3(
         try:
             part = client.get_document_text_detection(**req)
         except (ClientError, BotoCoreError) as exc:
-            raise ExtractionProcessingError(f"AWS Textract async polling failed: {exc}") from exc
+            raise ExtractionProcessingError(
+                f"AWS Textract async polling failed: {exc}"
+            ) from exc
         except Exception as exc:
-            raise ExtractionProcessingError(f"AWS Textract async polling failed: {exc}") from exc
+            raise ExtractionProcessingError(
+                f"AWS Textract async polling failed: {exc}"
+            ) from exc
 
         status = str(part.get("JobStatus") or "").upper()
         last_status = status or last_status
@@ -1173,7 +1456,9 @@ def _extract_text_with_textract_async_s3(
             detail = f"status={status}"
             if status_message:
                 detail += f", message={status_message}"
-            raise ExtractionProcessingError(f"AWS Textract async extraction failed: {detail}")
+            raise ExtractionProcessingError(
+                f"AWS Textract async extraction failed: {detail}"
+            )
 
         if time.time() >= deadline:
             raise ExtractionProcessingError(
@@ -1191,7 +1476,9 @@ def _extract_text_with_textract(
     s3_bucket: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if not payload:
-        raise ExtractionProcessingError("AWS Textract extraction failed: empty file payload")
+        raise ExtractionProcessingError(
+            "AWS Textract extraction failed: empty file payload"
+        )
 
     client = _build_textract_client()
     response: dict[str, Any]
@@ -1218,9 +1505,13 @@ def _extract_text_with_textract(
             if isinstance(response, dict):
                 response["Mode"] = "sync_bytes"
         except (ClientError, BotoCoreError) as exc:
-            raise ExtractionProcessingError(f"AWS Textract extraction failed: {exc}") from exc
+            raise ExtractionProcessingError(
+                f"AWS Textract extraction failed: {exc}"
+            ) from exc
         except Exception as exc:
-            raise ExtractionProcessingError(f"AWS Textract extraction failed: {exc}") from exc
+            raise ExtractionProcessingError(
+                f"AWS Textract extraction failed: {exc}"
+            ) from exc
 
     lines = _collect_textract_lines(response if isinstance(response, dict) else {})
 
@@ -1231,6 +1522,7 @@ def _extract_text_with_textract(
         )
 
     return extracted_text, response if isinstance(response, dict) else {}
+
 
 def _extract_aws_textract(
     document_name: str,
@@ -1249,9 +1541,15 @@ def _extract_aws_textract(
     )
     preview = extracted_text[:2000]
 
-    claim_match = re.search(r"(?:claim\s*(?:id|number)?\s*[:#-]?\s*)([A-Za-z0-9-_/]+)", extracted_text, re.I)
-    patient_match = re.search(r"(?:patient\s*(?:name)?\s*[:#-]?\s*)([A-Za-z .'-]{3,80})", extracted_text, re.I)
-    diagnosis_match = re.search(r"(?:diagnosis\s*[:#-]?\s*)([^\n\r]{3,140})", extracted_text, re.I)
+    claim_match = re.search(
+        r"(?:claim\s*(?:id|number)?\s*[:#-]?\s*)([A-Za-z0-9-_/]+)", extracted_text, re.I
+    )
+    patient_match = re.search(
+        r"(?:patient\s*(?:name)?\s*[:#-]?\s*)([A-Za-z .'-]{3,80})", extracted_text, re.I
+    )
+    diagnosis_match = re.search(
+        r"(?:diagnosis\s*[:#-]?\s*)([^\n\r]{3,140})", extracted_text, re.I
+    )
 
     entities = {
         "document_name": document_name,
@@ -1265,17 +1563,35 @@ def _extract_aws_textract(
 
     evidence: list[dict[str, Any]] = []
     if claim_match:
-        evidence.append({"type": "regex", "field": "claim_reference", "snippet": claim_match.group(0)})
+        evidence.append(
+            {
+                "type": "regex",
+                "field": "claim_reference",
+                "snippet": claim_match.group(0),
+            }
+        )
     if patient_match:
-        evidence.append({"type": "regex", "field": "patient_name", "snippet": patient_match.group(0)})
+        evidence.append(
+            {
+                "type": "regex",
+                "field": "patient_name",
+                "snippet": patient_match.group(0),
+            }
+        )
     if diagnosis_match:
-        evidence.append({"type": "regex", "field": "diagnosis", "snippet": diagnosis_match.group(0)})
+        evidence.append(
+            {"type": "regex", "field": "diagnosis", "snippet": diagnosis_match.group(0)}
+        )
 
-    line_snippets = [ln.strip() for ln in extracted_text.splitlines() if (ln or "").strip()]
+    line_snippets = [
+        ln.strip() for ln in extracted_text.splitlines() if (ln or "").strip()
+    ]
     for line in line_snippets[:8]:
         evidence.append({"type": "textract_line", "field": "line", "snippet": line})
 
-    normalized_entities = _normalize_extracted_entities(entities, extracted_text or preview)
+    normalized_entities = _normalize_extracted_entities(
+        entities, extracted_text or preview
+    )
     if _looks_like_kyc_document(document_name, extracted_text):
         normalized_entities = _apply_kyc_exclusion(
             normalized_entities,
@@ -1290,7 +1606,9 @@ def _extract_aws_textract(
         ]
 
     blocks = raw_textract.get("Blocks") if isinstance(raw_textract, dict) else []
-    doc_meta = raw_textract.get("DocumentMetadata") if isinstance(raw_textract, dict) else {}
+    doc_meta = (
+        raw_textract.get("DocumentMetadata") if isinstance(raw_textract, dict) else {}
+    )
     pages = 0
     if isinstance(doc_meta, dict):
         try:
@@ -1317,13 +1635,23 @@ def _extract_aws_textract(
             "sample_lines": line_snippets[:25],
         },
     }
-def _extract_local(document_name: str, mime_type: str, payload: bytes) -> dict[str, Any]:
+
+
+def _extract_local(
+    document_name: str, mime_type: str, payload: bytes
+) -> dict[str, Any]:
     text, text_source = _normalize_document_text(document_name, mime_type, payload)
     preview = text[:2000]
 
-    claim_match = re.search(r"(?:claim\s*(?:id|number)?\s*[:#-]?\s*)([A-Za-z0-9-_/]+)", text, re.I)
-    patient_match = re.search(r"(?:patient\s*(?:name)?\s*[:#-]?\s*)([A-Za-z .'-]{3,80})", text, re.I)
-    diagnosis_match = re.search(r"(?:diagnosis\s*[:#-]?\s*)([^\n\r]{3,120})", text, re.I)
+    claim_match = re.search(
+        r"(?:claim\s*(?:id|number)?\s*[:#-]?\s*)([A-Za-z0-9-_/]+)", text, re.I
+    )
+    patient_match = re.search(
+        r"(?:patient\s*(?:name)?\s*[:#-]?\s*)([A-Za-z .'-]{3,80})", text, re.I
+    )
+    diagnosis_match = re.search(
+        r"(?:diagnosis\s*[:#-]?\s*)([^\n\r]{3,120})", text, re.I
+    )
 
     entities = {
         "document_name": document_name,
@@ -1337,11 +1665,25 @@ def _extract_local(document_name: str, mime_type: str, payload: bytes) -> dict[s
 
     evidence = []
     if claim_match:
-        evidence.append({"type": "regex", "field": "claim_reference", "snippet": claim_match.group(0)})
+        evidence.append(
+            {
+                "type": "regex",
+                "field": "claim_reference",
+                "snippet": claim_match.group(0),
+            }
+        )
     if patient_match:
-        evidence.append({"type": "regex", "field": "patient_name", "snippet": patient_match.group(0)})
+        evidence.append(
+            {
+                "type": "regex",
+                "field": "patient_name",
+                "snippet": patient_match.group(0),
+            }
+        )
     if diagnosis_match:
-        evidence.append({"type": "regex", "field": "diagnosis", "snippet": diagnosis_match.group(0)})
+        evidence.append(
+            {"type": "regex", "field": "diagnosis", "snippet": diagnosis_match.group(0)}
+        )
 
     normalized_entities = _normalize_extracted_entities(entities, text or preview)
     if _looks_like_kyc_document(document_name, text):
@@ -1349,7 +1691,13 @@ def _extract_local(document_name: str, mime_type: str, payload: bytes) -> dict[s
             normalized_entities,
             "KYC/identity document excluded from clinical extraction.",
         )
-        evidence = [{"type": "policy", "field": "excluded_document", "snippet": "KYC/identity document excluded from clinical extraction."}]
+        evidence = [
+            {
+                "type": "policy",
+                "field": "excluded_document",
+                "snippet": "KYC/identity document excluded from clinical extraction.",
+            }
+        ]
 
     return {
         "provider": ExtractionProvider.local.value,
@@ -1407,7 +1755,9 @@ def _extract_openai(
         }
 
     safe_name = (document_name or "document").strip() or "document"
-    safe_mime = (mime_type or "application/octet-stream").strip().lower() or "application/octet-stream"
+    safe_mime = (
+        mime_type or "application/octet-stream"
+    ).strip().lower() or "application/octet-stream"
     lower_name = safe_name.lower()
     is_image = safe_mime.startswith("image/") or lower_name.endswith(
         (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif")
@@ -1432,10 +1782,10 @@ def _extract_openai(
         '    "clinical_findings": "",\n'
         '    "all_investigation_reports_with_values": [\n'
         '      {"lab_name":"","test_name":"","value":"","unit":"","reference_range":"","flag":"","date":"","line":""}\n'
-        '    ],\n'
+        "    ],\n"
         '    "date_wise_investigation_reports": [\n'
         '      {"date":"","details":[]}\n'
-        '    ],\n'
+        "    ],\n"
         '    "deranged_investigation": "",\n'
         '    "medicine_used": "",\n'
         '    "admission_required": "",\n'
@@ -1469,7 +1819,9 @@ def _extract_openai(
         if is_image:
             user_content.append({"type": "input_image", "image_url": data_uri})
         else:
-            user_content.append({"type": "input_file", "filename": safe_name, "file_data": data_uri})
+            user_content.append(
+                {"type": "input_file", "filename": safe_name, "file_data": data_uri}
+            )
     except Exception:
         user_content.append(
             {
@@ -1482,7 +1834,8 @@ def _extract_openai(
         user_content.append(
             {
                 "type": "input_text",
-                "text": "Helper text preview (truncated to 14k chars):\n" + text_preview,
+                "text": "Helper text preview (truncated to 14k chars):\n"
+                + text_preview,
             }
         )
 
@@ -1500,7 +1853,9 @@ def _extract_openai(
     used_model = configured_model
     rate_limited = False
 
-    def _status_detail(status_code: int | None, response_text: str) -> tuple[int | str, str]:
+    def _status_detail(
+        status_code: int | None, response_text: str
+    ) -> tuple[int | str, str]:
         status: int | str = status_code if status_code is not None else "unknown"
         return status, (response_text or "")[:800]
 
@@ -1508,7 +1863,9 @@ def _extract_openai(
         d = (detail or "").lower()
         if status == 404 and ("model" in d or "model_not_found" in d):
             return True
-        if status == 400 and ("model_not_found" in d or "does not exist" in d or "do not have access" in d):
+        if status == 400 and (
+            "model_not_found" in d or "does not exist" in d or "do not have access" in d
+        ):
             return True
         return False
 
@@ -1554,7 +1911,9 @@ def _extract_openai(
             responses_errors.append(f"{candidate} => {exc}")
 
     if parsed is None:
-        fallback_prompt = user_prompt + "\nDocument text preview:\n" + (text_preview or "(none)")
+        fallback_prompt = (
+            user_prompt + "\nDocument text preview:\n" + (text_preview or "(none)")
+        )
         for candidate in model_candidates:
             try:
                 body = chat_completions(
@@ -1576,7 +1935,11 @@ def _extract_openai(
                 model_name = str(body.get("model") or candidate)
                 used_model = candidate
                 model_output_text = _extract_openai_response_text(body)
-                parsed = _parse_json_payload(model_output_text) if model_output_text else None
+                parsed = (
+                    _parse_json_payload(model_output_text)
+                    if model_output_text
+                    else None
+                )
                 if parsed is not None:
                     break
             except OpenAIChatError as exc:
@@ -1637,7 +2000,9 @@ def _extract_openai(
         )
 
     entities = parsed.get("extracted_entities", {}) if isinstance(parsed, dict) else {}
-    evidence = _normalize_evidence_refs(parsed.get("evidence_refs", []) if isinstance(parsed, dict) else [])
+    evidence = _normalize_evidence_refs(
+        parsed.get("evidence_refs", []) if isinstance(parsed, dict) else []
+    )
     confidence = parsed.get("confidence") if isinstance(parsed, dict) else None
 
     entities = _normalize_extracted_entities(entities, text or model_output_text)
@@ -1676,6 +2041,206 @@ def _extract_openai(
         "raw_response": raw_response,
     }
 
+
+def _extract_hybrid_local(
+    document_name: str,
+    mime_type: str,
+    payload: bytes,
+) -> dict[str, Any]:
+    """
+    Extract using Phase 0 Hybrid OCR (PaddleOCR + OpenAI + Textract + Tesseract).
+
+    Supports:
+    - PDF: splits pages, classifies each, routes to optimal OCR
+    - Images: classifies, routes to optimal OCR
+    - Text documents: processes directly
+
+    Args:
+        document_name: Name of document
+        mime_type: MIME type (application/pdf, image/*, text/*)
+        payload: Document file bytes
+
+    Returns:
+        dict with extracted entities following standard extraction format
+
+    Raises:
+        ExtractionProcessingError: If hybrid OCR fails
+    """
+    import io
+    from app.ai.pdf_splitter import split_pdf, InvalidPDFError, EmptyPDFError
+    from app.ai.page_classifier import classify_page, BlankPageError, PageType
+    from app.ai.ocr_engine import run_hybrid_ocr, OCRError
+
+    start_time = time.time()
+    all_texts = []
+    processing_details = {
+        "pages_processed": 0,
+        "pages_skipped": 0,
+        "errors": [],
+        "page_classifications": [],
+    }
+
+    try:
+        # Handle PDF
+        if "pdf" in mime_type.lower():
+            # Write payload to temporary file
+            temp_path = f"/tmp/extract_{hash(payload)}.pdf"
+            try:
+                with open(temp_path, "wb") as f:
+                    f.write(payload)
+
+                # Split PDF into pages
+                images = split_pdf(temp_path, page_range=(0, settings.ocr_page_limit))
+
+                # Process each page
+                for page_num, image in enumerate(images):
+                    try:
+                        # Classify page
+                        classification = classify_page(image)
+                        page_type = classification["page_type"]
+                        confidence = classification["confidence"]
+
+                        processing_details["page_classifications"].append(
+                            {
+                                "page": page_num,
+                                "type": page_type.value,
+                                "confidence": confidence,
+                            }
+                        )
+
+                        # Run hybrid OCR based on classification
+                        ocr_result = run_hybrid_ocr(image, page_type=page_type)
+
+                        if ocr_result.text.strip():
+                            all_texts.append(
+                                f"[Page {page_num} - {page_type.value}]\n{ocr_result.text}"
+                            )
+                            processing_details["pages_processed"] += 1
+                        else:
+                            processing_details["pages_skipped"] += 1
+
+                    except BlankPageError:
+                        processing_details["pages_skipped"] += 1
+                        logger.debug(f"Skipped blank page {page_num}")
+                    except OCRError as e:
+                        error_msg = f"Page {page_num}: {str(e)}"
+                        processing_details["errors"].append(error_msg)
+                        logger.warning(error_msg)
+                        # Continue processing remaining pages
+                    except Exception as e:
+                        error_msg = f"Page {page_num}: Unexpected error: {str(e)}"
+                        processing_details["errors"].append(error_msg)
+                        logger.error(error_msg)
+
+            finally:
+                # Clean up temp file
+                import os
+
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+
+        # Handle images
+        elif "image" in mime_type.lower():
+            try:
+                image = Image.open(io.BytesIO(payload))
+
+                # Classify image
+                classification = classify_page(image)
+                page_type = classification["page_type"]
+
+                processing_details["page_classifications"].append(
+                    {
+                        "page": 0,
+                        "type": page_type.value,
+                        "confidence": classification["confidence"],
+                    }
+                )
+
+                # Run hybrid OCR
+                ocr_result = run_hybrid_ocr(image, page_type=page_type)
+
+                if ocr_result.text.strip():
+                    all_texts.append(ocr_result.text)
+                    processing_details["pages_processed"] = 1
+
+            except BlankPageError:
+                processing_details["pages_skipped"] = 1
+                logger.debug("Image is blank")
+            except OCRError as e:
+                raise ExtractionProcessingError(f"Image OCR failed: {str(e)}") from e
+
+        # Handle text documents
+        elif "text" in mime_type.lower():
+            try:
+                text = payload.decode("utf-8", errors="ignore")
+                all_texts.append(text)
+                processing_details["pages_processed"] = 1
+            except Exception as e:
+                raise ExtractionProcessingError(
+                    f"Cannot decode text document: {str(e)}"
+                ) from e
+
+        else:
+            raise ExtractionProcessingError(
+                f"Unsupported MIME type for hybrid OCR: {mime_type}"
+            )
+
+        # Merge all extracted text
+        merged_text = "\n\n".join(all_texts)
+
+        if not merged_text.strip():
+            raise ExtractionProcessingError("No text extracted from document")
+
+        # Extract medical entities from merged text
+        # Reuse existing entity extraction logic
+        from app.ai.extraction.medical_entities import extract_medical_entities
+
+        entities = extract_medical_entities(merged_text)
+
+        # Check for KYC documents
+        if _looks_like_kyc_document(document_name, merged_text):
+            logger.warning(
+                f"Document '{document_name}' appears to be KYC - excluding personal identifiers"
+            )
+            entities = _apply_kyc_exclusion(
+                entities,
+                "Document classified as KYC - personal data excluded for compliance",
+            )
+
+        processing_details["extraction_time_seconds"] = time.time() - start_time
+
+        return {
+            "provider": ExtractionProvider.hybrid_local.value,
+            "model_name": "hybrid-ocr-v1",
+            "extraction_version": "phase0-hybrid-v1",
+            "extracted_entities": entities,
+            "evidence_refs": [],
+            "confidence": sum(
+                [
+                    p.get("confidence", 0.5)
+                    for p in processing_details["page_classifications"]
+                ]
+            )
+            / max(len(processing_details["page_classifications"]), 1),
+            "raw_response": {
+                "source": "hybrid_local_ocr",
+                "processing_details": processing_details,
+                "text_preview": merged_text[:500],
+                "total_text_length": len(merged_text),
+            },
+        }
+
+    except ExtractionProcessingError:
+        raise
+    except Exception as e:
+        logger.error(f"Hybrid OCR extraction failed: {str(e)}")
+        raise ExtractionProcessingError(
+            f"Hybrid OCR extraction failed: {str(e)}"
+        ) from e
+
+
 def run_extraction(
     provider: ExtractionProvider,
     document_name: str,
@@ -1703,6 +2268,8 @@ def run_extraction(
             storage_key=storage_key,
             s3_bucket=s3_bucket,
         )
+    if provider == ExtractionProvider.hybrid_local:
+        return _extract_hybrid_local(document_name, mime_type, payload)
 
     try:
         return _extract_aws_textract(
@@ -1727,28 +2294,3 @@ def run_extraction(
         except (ExtractionConfigError, ExtractionProcessingError):
             return _extract_local(document_name, mime_type, payload)
     return _extract_local(document_name, mime_type, payload)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
