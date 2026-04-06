@@ -223,28 +223,30 @@ The AI layer makes **external LLM/API calls** to OpenAI, OCR.Space, and AWS Text
 
 | File                          | Why it's good                                                                  |
 | ----------------------------- | ------------------------------------------------------------------------------ |
-| `app/ai/openai_chat.py`       | Clean, reusable `chat_completions()` helper. No DB access.                     |
-| `app/ai/claims_conclusion.py` | Properly separated conclusion generation. Uses `openai_chat.py`. No DB access. |
+| `app/ai/openai_chat.py`       | Clean, reusable `chat_completions()` + `extract_message_text()` helper. No DB access. |
+| `app/ai/openai_responses.py`  | Clean, reusable `responses_create()` + `extract_responses_text()` helper. No DB access. |
+| `app/ai/claims_conclusion.py` | Properly separated conclusion generation. Uses `extract_message_text()`. No DB access. |
 | `app/ai/__init__.py`          | Documents: "This layer must not access the database directly."                 |
 
-### ❌ Mixed into services (violates architecture)
+### ✅ Deduplicated (was problematic, now fixed)
+
+| File | Before | After |
+|---|---|---|
+| `ai/claims_conclusion.py` | Duplicated `_extract_openai_response_text()` | ✅ Uses `extract_message_text()` |
+| `ai/grammar_service.py` | Duplicated `_extract_openai_response_text()` | ✅ Removed (unused) |
+| `ai/extraction_providers.py` | 38-line duplicate | ✅ Delegates to both shared extractors |
+| `ai/claim_structuring_service.py` | 22-line duplicate | ✅ Delegates to `extract_responses_text()` |
+
+~96 lines of duplicated code eliminated.
+
+### ❌ Still mixed into services (violates architecture)
 
 | File                                        | Problem                                                                                                |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `app/services/grammar_service.py`           | Has its own `httpx` calls to OpenAI. Duplicates `openai_chat.py` pattern.                              |
-| `app/services/extraction_providers.py`      | Has its own `httpx` calls to OpenAI Responses API + Chat Completions. Doesn't use `ai/openai_chat.py`. |
-| `app/services/claim_structuring_service.py` | Has its own `httpx` call to OpenAI Responses API. Doesn't use `ai/openai_chat.py`.                     |
-| `app/services/checklist_pipeline.py`        | Has its own `httpx` call to OpenAI. Doesn't use `ai/openai_chat.py`.                                   |
-
-### 🔴 Duplicated code
-
-The function `_extract_openai_response_text()` (or variants) is duplicated in **5 files**:
-
-1. `app/ai/claims_conclusion.py`
-2. `app/services/grammar_service.py`
-3. `app/services/extraction_providers.py`
-4. `app/services/claim_structuring_service.py`
-5. `app/services/checklist_pipeline.py`
+| `app/services/grammar_service.py`           | Contains full grammar-check orchestration (batching, language_tool fallback, model selection). Should be in `ai/`. |
+| `app/services/extraction_providers.py`      | Contains massive extraction orchestration (OCR Space, Textract, OpenAI fallback chain). ~1755 lines. Should be split: AI calls in `ai/`, entity normalization in `domain/`. |
+| `app/services/claim_structuring_service.py` | Contains **direct DB access** (creates tables, INSERT/SELECT). ~2506 lines. Mixes AI calls, DB access, and business logic. |
+| `app/services/checklist_pipeline.py`        | Contains the full OpenAI merged medical audit orchestration (~1360 lines). Has **direct DB access** (queries claims, document_extractions). |
 
 ### 🔴 Duplicated in endpoint file
 
@@ -259,7 +261,7 @@ The function `_extract_openai_response_text()` (or variants) is duplicated in **
 
 | Layer                | What it does                                                   | External calls                  | DB access                                            | Current location                            | Should be in          |
 | -------------------- | -------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------- | ------------------------------------------- | --------------------- |
-| **ML**               | Naive Bayes claim classification (approve/reject/query/review) | None                            | Yes (reads claims, extractions, feedback, decisions) | `app/services/ml_claim_model.py`            | `app/ml/`             |
+| **ML**               | Naive Bayes claim classification (approve/reject/query/review) | None                            | Yes (reads claims, extractions, feedback, decisions) | `app/ml/` (restructured)                    | ✅ Already correct    |
 | **AI — Extraction**  | OCR + LLM structured entity extraction from medical documents  | OCR.Space, OpenAI, AWS Textract | No                                                   | `app/services/extraction_providers.py`      | `app/ai/extraction/`  |
 | **AI — Grammar**     | Grammar correction of medical reports                          | OpenAI (fallback)               | No                                                   | `app/services/grammar_service.py`           | `app/ai/grammar/`     |
 | **AI — Conclusion**  | Medico-legal conclusion generation                             | OpenAI                          | No                                                   | `app/ai/claims_conclusion.py`               | ✅ Already correct    |

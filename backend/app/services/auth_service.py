@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories import auth_logs_repo, user_sessions_repo, users_repo
-from app.schemas.auth import AuthUserResponse, CreateUserRequest, UserListResponse, UserRole
+from app.schemas.auth import (
+    AuthUserResponse,
+    CreateUserRequest,
+    UserListResponse,
+    UserRole,
+)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -41,7 +46,9 @@ class AuthenticatedUser:
     is_active: bool
 
     def as_response(self) -> AuthUserResponse:
-        return AuthUserResponse(id=self.id, username=self.username, role=self.role, is_active=self.is_active)
+        return AuthUserResponse(
+            id=self.id, username=self.username, role=self.role, is_active=self.is_active
+        )
 
 
 def _password_policy_error(password: str) -> str | None:
@@ -113,17 +120,35 @@ def authenticate_and_create_session(
             role_for_log = UserRole.user
 
     if user_row is None:
-        _log_auth_attempt(db, None, username.strip(), role_for_log, False, ip_address, user_agent)
+        _log_auth_attempt(
+            db, None, username.strip(), role_for_log, False, ip_address, user_agent
+        )
         db.commit()
         raise AuthenticationError("invalid credentials")
 
     if not bool(user_row["is_active"]):
-        _log_auth_attempt(db, int(user_row["id"]), username.strip(), role_for_log, False, ip_address, user_agent)
+        _log_auth_attempt(
+            db,
+            int(user_row["id"]),
+            username.strip(),
+            role_for_log,
+            False,
+            ip_address,
+            user_agent,
+        )
         db.commit()
         raise AuthenticationError("user is inactive")
 
     if not verify_password(password, str(user_row["password_hash"])):
-        _log_auth_attempt(db, int(user_row["id"]), username.strip(), role_for_log, False, ip_address, user_agent)
+        _log_auth_attempt(
+            db,
+            int(user_row["id"]),
+            username.strip(),
+            role_for_log,
+            False,
+            ip_address,
+            user_agent,
+        )
         db.commit()
         raise AuthenticationError("invalid credentials")
 
@@ -136,7 +161,9 @@ def authenticate_and_create_session(
 
     raw_token = secrets.token_urlsafe(48)
     token_hash = _hash_token(raw_token)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.auth_session_hours)
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        hours=settings.auth_session_hours
+    )
 
     user_sessions_repo.create_session(
         db,
@@ -145,7 +172,9 @@ def authenticate_and_create_session(
         role_snapshot=user.role.value,
         expires_at=expires_at,
     )
-    _log_auth_attempt(db, user.id, user.username, user.role, True, ip_address, user_agent)
+    _log_auth_attempt(
+        db, user.id, user.username, user.role, True, ip_address, user_agent
+    )
     db.commit()
 
     return user, raw_token, expires_at
@@ -203,7 +232,9 @@ def list_users(db: Session, limit: int = 100, offset: int = 0) -> UserListRespon
     return UserListResponse(total=total, items=items)
 
 
-def change_own_password(db: Session, user_id: int, current_password: str, new_password: str) -> None:
+def change_own_password(
+    db: Session, user_id: int, current_password: str, new_password: str
+) -> None:
     password_hash = users_repo.get_user_password_hash(db, user_id)
     if password_hash is None:
         raise UserNotFoundError
@@ -219,7 +250,9 @@ def change_own_password(db: Session, user_id: int, current_password: str, new_pa
     db.commit()
 
 
-def admin_reset_user_password(db: Session, username: str, role: UserRole | None, new_password: str) -> None:
+def admin_reset_user_password(
+    db: Session, username: str, role: UserRole | None, new_password: str
+) -> None:
     policy_error = _password_policy_error(new_password)
     if policy_error is not None:
         raise ValueError(policy_error)
@@ -243,5 +276,7 @@ def ensure_bootstrap_super_admin(db: Session, username: str, password: str) -> N
     if existing is not None:
         return
 
-    payload = CreateUserRequest(username=username, password=password, role=UserRole.super_admin)
+    payload = CreateUserRequest(
+        username=username, password=password, role=UserRole.super_admin
+    )
     create_user_account(db, payload)

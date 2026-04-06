@@ -5,12 +5,12 @@ import math
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.ai.extraction_providers import ExtractionConfigError, ExtractionProcessingError, run_extraction
+from app.ai.extraction import ExtractionConfigError, ExtractionProcessingError, run_extraction
 from app.infrastructure.storage.storage_service import StorageConfigError, StorageOperationError, download_bytes
+from app.repositories import claim_documents_repo, document_extractions_repo, workflow_events_repo
 from app.schemas.extraction import ExtractionListResponse, ExtractionProvider, ExtractionResponse
 
 
@@ -62,29 +62,6 @@ def _sanitize_json_payload(value: Any) -> Any:
     return value
 
 
-def _emit_workflow_event(
-    db: Session,
-    claim_id: UUID,
-    event_type: str,
-    actor_id: str | None,
-    payload: dict[str, Any],
-) -> None:
-    db.execute(
-        text(
-            """
-            INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload)
-            VALUES (:claim_id, 'user', :actor_id, :event_type, CAST(:event_payload AS jsonb))
-            """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "actor_id": actor_id,
-            "event_type": event_type,
-            "event_payload": json.dumps(payload),
-        },
-    )
-
-
 def run_document_extraction(
     db: Session,
     document_id: UUID,
@@ -92,35 +69,19 @@ def run_document_extraction(
     actor_id: str | None,
     force_refresh: bool = False,
 ) -> ExtractionResponse:
-    doc = db.execute(
-        text(
-            """
-            SELECT id, claim_id, storage_key, file_name, mime_type, metadata
-            FROM claim_documents
-            WHERE id = :document_id
-            """
-        ),
-        {"document_id": str(document_id)},
-    ).mappings().first()
-
+    doc = claim_documents_repo.get_document_row_by_id(db, document_id=str(document_id))
     if doc is None:
         raise DocumentNotFoundError
 
-    claim_id = doc["claim_id"]
+    claim_id = UUID(str(doc["claim_id"]))
     doc_metadata = _normalize_json(doc.get("metadata"), dict)
     resolved_s3_bucket = str(doc_metadata.get("bucket") or doc_metadata.get("legacy_s3_bucket") or "").strip() or None
     storage_key = str(doc.get("storage_key") or "").strip()
 
     if force_refresh:
-        db.execute(
-            text("DELETE FROM document_extractions WHERE claim_id = :claim_id AND document_id = :document_id"),
-            {"claim_id": str(claim_id), "document_id": str(document_id)},
-        )
+        document_extractions_repo.delete_by_claim_and_document(db, str(claim_id), str(document_id))
 
-    db.execute(
-        text("UPDATE claim_documents SET parse_status = 'processing' WHERE id = :document_id"),
-        {"document_id": str(document_id)},
-    )
+    claim_documents_repo.update_parse_status(db, str(document_id), "processing")
     db.commit()
 
     try:
@@ -136,75 +97,28 @@ def run_document_extraction(
 
         extraction_version = f"{extraction_data['extraction_version']}-{uuid4().hex[:8]}"
 
-        row = db.execute(
-            text(
-                """
-                INSERT INTO document_extractions (
-                    claim_id,
-                    document_id,
-                    extraction_version,
-                    model_name,
-                    extracted_entities,
-                    evidence_refs,
-                    confidence,
-                    created_by
-                )
-                VALUES (
-                    :claim_id,
-                    :document_id,
-                    :extraction_version,
-                    :model_name,
-                    CAST(:extracted_entities AS jsonb),
-                    CAST(:evidence_refs AS jsonb),
-                    :confidence,
-                    :created_by
-                )
-                RETURNING
-                    id,
-                    claim_id,
-                    document_id,
-                    extraction_version,
-                    model_name,
-                    extracted_entities,
-                    evidence_refs,
-                    confidence,
-                    created_by,
-                    created_at
-                """
-            ),
-            {
-                "claim_id": str(claim_id),
-                "document_id": str(document_id),
-                "extraction_version": extraction_version,
-                "model_name": extraction_data["model_name"],
-                "extracted_entities": json.dumps(
-                    _sanitize_json_payload(extraction_data["extracted_entities"]),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ),
-                "evidence_refs": json.dumps(
-                    _sanitize_json_payload(extraction_data["evidence_refs"]),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ),
-                "confidence": extraction_data.get("confidence"),
-                "created_by": actor_id or extraction_data["provider"],
-            },
-        ).mappings().one()
-
-        db.execute(
-            text("UPDATE claim_documents SET parse_status = 'succeeded', parsed_at = NOW() WHERE id = :document_id"),
-            {"document_id": str(document_id)},
+        row = document_extractions_repo.insert_extraction_returning_row(
+            db,
+            claim_id=str(claim_id),
+            document_id=str(document_id),
+            extraction_version=extraction_version,
+            model_name=extraction_data["model_name"],
+            extracted_entities=_sanitize_json_payload(extraction_data["extracted_entities"]),
+            evidence_refs=_sanitize_json_payload(extraction_data["evidence_refs"]),
+            confidence=extraction_data.get("confidence"),
+            created_by=actor_id or extraction_data["provider"],
         )
 
-        _emit_workflow_event(
-            db=db,
-            claim_id=claim_id,
+        claim_documents_repo.update_parse_status(db, str(document_id), "succeeded")
+
+        workflow_events_repo.emit_workflow_event(
+            db,
+            claim_id,
             event_type="document_extracted",
             actor_id=actor_id,
             payload={
                 "document_id": str(document_id),
-                "extraction_id": str(row["id"]),
+                "extraction_id": str(row.get("id") or ""),
                 "provider": extraction_data["provider"],
                 "model_name": extraction_data["model_name"],
             },
@@ -219,13 +133,10 @@ def run_document_extraction(
     except (StorageConfigError, StorageOperationError, ExtractionConfigError, ExtractionProcessingError, SQLAlchemyError, Exception) as exc:
         db.rollback()
         try:
-            db.execute(
-                text("UPDATE claim_documents SET parse_status = 'failed' WHERE id = :document_id"),
-                {"document_id": str(document_id)},
-            )
-            _emit_workflow_event(
-                db=db,
-                claim_id=claim_id,
+            claim_documents_repo.update_parse_status(db, str(document_id), "failed")
+            workflow_events_repo.emit_workflow_event(
+                db,
+                claim_id,
                 event_type="document_extraction_failed",
                 actor_id=actor_id,
                 payload={
@@ -246,42 +157,14 @@ def run_document_extraction(
 
 
 def list_document_extractions(db: Session, document_id: UUID, limit: int, offset: int) -> ExtractionListResponse:
-    params = {"document_id": str(document_id), "limit": limit, "offset": offset}
-
-    exists = db.execute(
-        text("SELECT 1 FROM claim_documents WHERE id = :document_id"),
-        params,
-    ).first()
-    if exists is None:
+    doc = claim_documents_repo.get_document_row_by_id(db, document_id=str(document_id))
+    if doc is None:
         raise DocumentNotFoundError
 
-    total = db.execute(
-        text("SELECT COUNT(*) FROM document_extractions WHERE document_id = :document_id"),
-        params,
-    ).scalar_one()
-
-    rows = db.execute(
-        text(
-            """
-            SELECT
-                id,
-                claim_id,
-                document_id,
-                extraction_version,
-                model_name,
-                extracted_entities,
-                evidence_refs,
-                confidence,
-                created_by,
-                created_at
-            FROM document_extractions
-            WHERE document_id = :document_id
-            ORDER BY created_at DESC
-            LIMIT :limit OFFSET :offset
-            """
-        ),
-        params,
-    ).mappings().all()
-
-    return ExtractionListResponse(total=total, items=[_to_response(dict(r)) for r in rows])
-
+    rows, total = document_extractions_repo.list_extractions_by_document_id(
+        db,
+        document_id=str(document_id),
+        limit=limit,
+        offset=offset,
+    )
+    return ExtractionListResponse(total=total, items=[_to_response(r) for r in rows])

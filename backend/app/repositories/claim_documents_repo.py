@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 
@@ -159,3 +160,359 @@ def get_assigned_doctor_id_for_document(db: Session, document_id: str) -> str | 
     if row is None:
         return None
     return str(row.get("assigned_doctor_id") or "")
+
+
+# ----------------------------
+# Newer schema helpers (mime_type/uploaded_at/etc.)
+# Keep these separate from the legacy helpers above so existing callers remain stable.
+# ----------------------------
+
+
+def list_storage_key_and_metadata_for_claim(db: Session, *, claim_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text("SELECT storage_key, metadata FROM claim_documents WHERE claim_id = :claim_id"),
+        {"claim_id": claim_id},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def insert_legacy_external_document_if_missing(
+    db: Session,
+    *,
+    claim_id: str,
+    storage_key: str,
+    file_name: str,
+    mime_type: str,
+    metadata: dict[str, Any],
+) -> str | None:
+    row = db.execute(
+        text(
+            """
+            INSERT INTO claim_documents (
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                retention_class,
+                uploaded_by,
+                metadata
+            )
+            VALUES (
+                :claim_id,
+                :storage_key,
+                :file_name,
+                :mime_type,
+                NULL,
+                NULL,
+                'succeeded',
+                'standard',
+                'legacy_sync',
+                CAST(:metadata AS jsonb)
+            )
+            ON CONFLICT (claim_id, storage_key) DO NOTHING
+            RETURNING id
+            """
+        ),
+        {
+            "claim_id": claim_id,
+            "storage_key": storage_key,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "metadata": json.dumps(metadata),
+        },
+    ).mappings().first()
+    if row is None:
+        return None
+    return str(row.get("id") or "") or None
+
+
+def insert_s3_prefix_document_if_missing(
+    db: Session,
+    *,
+    claim_id: str,
+    storage_key: str,
+    file_name: str,
+    mime_type: str,
+    file_size_bytes: int,
+    metadata: dict[str, Any],
+) -> str | None:
+    row = db.execute(
+        text(
+            """
+            INSERT INTO claim_documents (
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                retention_class,
+                uploaded_by,
+                uploaded_at,
+                metadata
+            )
+            VALUES (
+                :claim_id,
+                :storage_key,
+                :file_name,
+                :mime_type,
+                :file_size_bytes,
+                NULL,
+                'succeeded',
+                'standard',
+                'legacy_sync',
+                NOW(),
+                CAST(:metadata AS jsonb)
+            )
+            ON CONFLICT (claim_id, storage_key) DO NOTHING
+            RETURNING id
+            """
+        ),
+        {
+            "claim_id": claim_id,
+            "storage_key": storage_key,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "file_size_bytes": int(file_size_bytes or 0),
+            "metadata": json.dumps(metadata),
+        },
+    ).mappings().first()
+    if row is None:
+        return None
+    return str(row.get("id") or "") or None
+
+
+def insert_uploaded_document_returning_row(
+    db: Session,
+    *,
+    claim_id: str,
+    storage_key: str,
+    file_name: str,
+    mime_type: str,
+    file_size_bytes: int,
+    checksum_sha256: str,
+    retention_class: str,
+    uploaded_by: str | None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    row = db.execute(
+        text(
+            """
+            INSERT INTO claim_documents (
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                retention_class,
+                uploaded_by,
+                metadata
+            )
+            VALUES (
+                :claim_id,
+                :storage_key,
+                :file_name,
+                :mime_type,
+                :file_size_bytes,
+                :checksum_sha256,
+                'pending',
+                :retention_class,
+                :uploaded_by,
+                CAST(:metadata AS jsonb)
+            )
+            RETURNING
+                id,
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                page_count,
+                retention_class,
+                uploaded_by,
+                uploaded_at,
+                parsed_at,
+                metadata
+            """
+        ),
+        {
+            "claim_id": claim_id,
+            "storage_key": storage_key,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "file_size_bytes": int(file_size_bytes or 0),
+            "checksum_sha256": checksum_sha256,
+            "retention_class": retention_class,
+            "uploaded_by": uploaded_by,
+            "metadata": json.dumps(metadata),
+        },
+    ).mappings().one()
+    return dict(row)
+
+
+def update_document_metadata_merge(db: Session, *, document_id: str, merge_meta: dict[str, Any]) -> None:
+    db.execute(
+        text(
+            """
+            UPDATE claim_documents
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || CAST(:merge_meta AS jsonb)
+            WHERE id = :document_id
+            """
+        ),
+        {"document_id": document_id, "merge_meta": json.dumps(merge_meta)},
+    )
+
+
+def get_document_row_by_id(db: Session, *, document_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT
+                id,
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                page_count,
+                retention_class,
+                uploaded_by,
+                uploaded_at,
+                parsed_at,
+                metadata
+            FROM claim_documents
+            WHERE id = :document_id
+            """
+        ),
+        {"document_id": document_id},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def list_documents_paginated_for_claim(
+    db: Session,
+    *,
+    claim_id: str,
+    limit: int,
+    offset: int,
+) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            SELECT
+                id,
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                page_count,
+                retention_class,
+                uploaded_by,
+                uploaded_at,
+                parsed_at,
+                metadata
+            FROM claim_documents
+            WHERE claim_id = :claim_id
+            ORDER BY uploaded_at DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        {"claim_id": claim_id, "limit": int(limit or 0), "offset": int(offset or 0)},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def update_parse_status_returning_row(
+    db: Session,
+    *,
+    document_id: str,
+    parse_status: str,
+) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            UPDATE claim_documents
+            SET parse_status = :parse_status,
+                parsed_at = CASE WHEN :parse_status = 'succeeded' THEN NOW() ELSE parsed_at END
+            WHERE id = :document_id
+            RETURNING
+                id,
+                claim_id,
+                storage_key,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                checksum_sha256,
+                parse_status,
+                page_count,
+                retention_class,
+                uploaded_by,
+                uploaded_at,
+                parsed_at,
+                metadata
+            """
+        ),
+        {"document_id": document_id, "parse_status": parse_status},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def get_storage_key_and_metadata_by_id(db: Session, *, document_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text("SELECT id, storage_key, metadata FROM claim_documents WHERE id = :document_id"),
+        {"document_id": document_id},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def list_docs_for_bulk_delete(
+    db: Session,
+    *,
+    claim_id: str,
+    document_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not document_ids:
+        return []
+    query = text(
+        """
+        SELECT id, storage_key, metadata
+        FROM claim_documents
+        WHERE claim_id = :claim_id
+          AND id IN :document_ids
+        """
+    ).bindparams(bindparam("document_ids", expanding=True))
+    rows = db.execute(query, {"claim_id": claim_id, "document_ids": document_ids}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def delete_docs_for_claim_returning_ids(
+    db: Session,
+    *,
+    claim_id: str,
+    document_ids: list[str],
+) -> list[str]:
+    if not document_ids:
+        return []
+    query = text(
+        """
+        DELETE FROM claim_documents
+        WHERE claim_id = :claim_id
+          AND id IN :document_ids
+        RETURNING id
+        """
+    ).bindparams(bindparam("document_ids", expanding=True))
+    rows = db.execute(query, {"claim_id": claim_id, "document_ids": document_ids}).mappings().all()
+    return [str(r.get("id") or "") for r in rows if str(r.get("id") or "")]

@@ -201,3 +201,116 @@ def get_decision_by_legacy_analysis_id(db: Session, legacy_analysis_id: str) -> 
         {"legacy_analysis_id": legacy_analysis_id},
     ).mappings().first()
     return dict(row) if row else None
+
+
+def deactivate_active_checklist_pipeline_for_claim(db: Session, *, claim_id: UUID) -> None:
+    db.execute(
+        text(
+            """
+            UPDATE decision_results
+            SET is_active = FALSE
+            WHERE claim_id = :claim_id AND is_active = TRUE AND generated_by = 'checklist_pipeline'
+            """
+        ),
+        {"claim_id": str(claim_id)},
+    )
+
+
+def insert_checklist_pipeline_decision_result(
+    db: Session,
+    *,
+    claim_id: UUID,
+    extraction_id: UUID | None,
+    rule_version: str,
+    model_version: str | None,
+    fraud_risk_score: float | None,
+    qc_risk_score: float | None,
+    consistency_checks_json: str,
+    rule_hits_json: str,
+    explanation_summary: str,
+    recommendation: str,
+    route_target: str,
+    manual_review_required: bool,
+    review_priority: int,
+    decision_payload_json: str,
+) -> dict[str, Any]:
+    row = db.execute(
+        text(
+            """
+            INSERT INTO decision_results (
+                claim_id,
+                extraction_id,
+                rule_version,
+                model_version,
+                fraud_risk_score,
+                qc_risk_score,
+                consistency_checks,
+                rule_hits,
+                explanation_summary,
+                recommendation,
+                route_target,
+                manual_review_required,
+                review_priority,
+                decision_payload,
+                generated_by,
+                is_active
+            )
+            VALUES (
+                :claim_id,
+                :extraction_id,
+                :rule_version,
+                :model_version,
+                :fraud_risk_score,
+                :qc_risk_score,
+                CAST(:consistency_checks AS jsonb),
+                CAST(:rule_hits AS jsonb),
+                :explanation_summary,
+                :recommendation,
+                :route_target,
+                :manual_review_required,
+                :review_priority,
+                CAST(:decision_payload AS jsonb),
+                'checklist_pipeline',
+                TRUE
+            )
+            RETURNING id, generated_at
+            """
+        ),
+        {
+            "claim_id": str(claim_id),
+            "extraction_id": str(extraction_id) if extraction_id else None,
+            "rule_version": rule_version,
+            "model_version": model_version,
+            "fraud_risk_score": fraud_risk_score,
+            "qc_risk_score": qc_risk_score,
+            "consistency_checks": consistency_checks_json,
+            "rule_hits": rule_hits_json,
+            "explanation_summary": explanation_summary,
+            "recommendation": recommendation,
+            "route_target": route_target,
+            "manual_review_required": bool(manual_review_required),
+            "review_priority": int(review_priority),
+            "decision_payload": decision_payload_json,
+        },
+    ).mappings().one()
+    return dict(row)
+
+
+def get_latest_checklist_pipeline_decision_row(
+    db: Session,
+    *,
+    claim_id: UUID,
+) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT id, recommendation, route_target, manual_review_required, review_priority, generated_at, decision_payload
+            FROM decision_results
+            WHERE claim_id = :claim_id AND generated_by = 'checklist_pipeline'
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """
+        ),
+        {"claim_id": str(claim_id)},
+    ).mappings().first()
+    return dict(row) if row is not None else None

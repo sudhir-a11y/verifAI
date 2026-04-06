@@ -381,67 +381,9 @@ def _extract_openai_text(body: Any) -> str:
 
 
 def _ensure_table(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS claim_structured_data (
-                id BIGSERIAL PRIMARY KEY,
-                claim_id UUID NOT NULL UNIQUE REFERENCES claims(id) ON DELETE CASCADE,
-                external_claim_id VARCHAR(100) NOT NULL,
-                company_name TEXT,
-                claim_type TEXT,
-                insured_name TEXT,
-                hospital_name TEXT,
-                treating_doctor TEXT,
-                treating_doctor_registration_number TEXT,
-                doa TEXT,
-                dod TEXT,
-                diagnosis TEXT,
-                complaints TEXT,
-                findings TEXT,
-                investigation_finding_in_details TEXT,
-                medicine_used TEXT,
-                high_end_antibiotic_for_rejection TEXT,
-                deranged_investigation TEXT,
-                claim_amount TEXT,
-                conclusion TEXT,
-                recommendation TEXT,
-                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                source VARCHAR(40) NOT NULL DEFAULT 'heuristic',
-                confidence DOUBLE PRECISION,
-                created_by VARCHAR(100),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-    )
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_claim_structured_data_claim_id ON claim_structured_data(claim_id)"))
-
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS claim_provider_registry_clean (
-                id BIGSERIAL PRIMARY KEY,
-                claim_id UUID NOT NULL UNIQUE REFERENCES claims(id) ON DELETE CASCADE,
-                external_claim_id VARCHAR(100) NOT NULL,
-                hospital_name TEXT NOT NULL,
-                treating_doctor TEXT NOT NULL,
-                treating_doctor_registration_number TEXT NOT NULL,
-                hospital_norm TEXT NOT NULL,
-                doctor_norm TEXT NOT NULL,
-                reg_norm TEXT NOT NULL,
-                source VARCHAR(60) NOT NULL DEFAULT 'claim_structured_data',
-                confidence DOUBLE PRECISION,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-    )
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_provider_registry_clean_hospital ON claim_provider_registry_clean(hospital_norm)"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_provider_registry_clean_doctor ON claim_provider_registry_clean(doctor_norm)"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_provider_registry_clean_reg ON claim_provider_registry_clean(reg_norm)"))
+    from app.repositories import claim_structured_data_repo, provider_registry_repo
+    claim_structured_data_repo.ensure_table(db)
+    provider_registry_repo.ensure_table(db)
 
 
 def _parse_amount(value: Any) -> str:
@@ -869,27 +811,9 @@ def _split_medicine_aliases(value: Any) -> list[str]:
 
 
 def _load_high_end_medicine_catalog(db: Session) -> list[dict[str, Any]]:
-    like_params: dict[str, Any] = {}
-    clauses: list[str] = ["is_high_end_antibiotic = TRUE"]
-    for idx, name in enumerate(HIGH_END_ANTIBIOTICS):
-        key = f"h{idx}"
-        clauses.append(f"LOWER(COALESCE(components, '')) LIKE :{key}")
-        like_params[key] = "%" + name.lower() + "%"
-
-    sql = (
-        "SELECT medicine_name, components, is_high_end_antibiotic "
-        "FROM medicine_component_lookup "
-        + "WHERE " + " OR ".join(clauses) + " "
-        + "ORDER BY medicine_name ASC"
-    )
-
-    try:
-        rows = db.execute(text(sql), like_params).mappings().all()
-    except Exception:
-        return []
-
-    catalog: list[dict[str, Any]] = []
-    for row in rows:
+    from app.repositories import medicine_catalog_repo
+    catalog = medicine_catalog_repo.load_high_end_antibiotic_catalog(db, HIGH_END_ANTIBIOTICS)
+    for row in catalog:
         medicine_name = _txt(row.get("medicine_name"))
         components = _txt(row.get("components"))
         searchable = "\n".join([medicine_name, components])

@@ -26,12 +26,13 @@ def ensure_table(db: Session) -> None:
         ),
     )
     db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS idx_claim_provider_registry_clean_claim_id
-            ON claim_provider_registry_clean (claim_id)
-            """
-        ),
+        text("CREATE INDEX IF NOT EXISTS idx_provider_registry_clean_hospital ON claim_provider_registry_clean(hospital_norm)")
+    )
+    db.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_provider_registry_clean_doctor ON claim_provider_registry_clean(doctor_norm)")
+    )
+    db.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_provider_registry_clean_reg ON claim_provider_registry_clean(reg_norm)")
     )
 
 

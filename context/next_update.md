@@ -9,10 +9,10 @@ This file is the single “what’s done vs what’s next” tracker for the bac
 ## Progress (percentage)
 
 - Domain layer separation: **100%** (API routes delegate to `domain/*`; legacy inline blocks are disabled)
-- Repositories extraction: ~80% (admin + user-tools reporting/payment repos added; some legacy `services/*` shims remain)
+- Repositories extraction: ~92% (domain no longer runs SQL directly; remaining work is consolidating legacy repos/services and expanding workflows)
 - AI layer separation: **100%**
 - ML layer separation: **100%** (ML code lives under `app/ml`; no internal callers import via shims)
-- Workflows formalization: ~25% (pipeline scaffold added; still mostly service-driven)
+- Workflows formalization: **100%** (claim pipeline + checklist pipeline orchestration now live under `app/workflows/*`)
 
 ---
 
@@ -100,7 +100,7 @@ Resulting rule compliance:
   - Routes/services now import directly from `backend/app/ai/*` (no `backend/app/services/{grammar_service,claim_structuring_service,extraction_providers}.py` usage).
 
 - Workflows scaffold added (starting point for orchestration separation):
-  - `backend/app/workflows/claim_pipeline.py:1` provides `run_claim_pipeline(...)` orchestrator (documents → extraction optional → checklist → optional conclusion from latest report).
+  - `backend/app/workflows/claim_pipeline.py:1` provides `run_claim_pipeline(...)` orchestrator (documents → extraction optional → checklist → optional conclusion + optional system report save).
   - API entrypoint added:
     - `backend/app/api/v1/endpoints/claims.py:415` (`POST /claims/{claim_id}/pipeline/run`)
 
@@ -120,19 +120,55 @@ Resulting rule compliance:
     - `backend/app/domain/checklist/pipeline.py:1`
     - `backend/app/services/checklist_pipeline.py:1`
     - `backend/app/domain/checklist/checklist_use_cases.py:1` now imports from `app.domain.checklist.pipeline`.
+  - Checklist catalog source moved to domain (service kept only as shim):
+    - `backend/app/domain/checklist/catalog_source.py:1`
+    - `backend/app/services/legacy_checklist_source.py:1`
+    - `backend/app/domain/checklist/pipeline.py:1` now calls `get_checklist_catalog(db, ...)`.
 
 ---
 
 ## Left to do (next steps)
 
 1. Formalize workflows
-   - Expand `backend/app/workflows/claim_pipeline.py:1` to include decision persistence and report generation as the single orchestrator.
+   - Done: all orchestration lives under `backend/app/workflows/*`.
+   - Claim pipeline composes flows:
+     - `backend/app/workflows/claim_pipeline.py:1`
+   - Workflow flows:
+     - `backend/app/workflows/extraction_flow.py:1`
+     - `backend/app/workflows/checklist_flow.py:1`
+     - `backend/app/workflows/decision_flow.py:1`
+     - `backend/app/workflows/conclusion_flow.py:1`
+     - `backend/app/workflows/report_flow.py:1`
+   - Checklist pipeline orchestration moved from domain to workflows:
+     - `backend/app/workflows/checklist_pipeline.py:1`
+     - `backend/app/domain/checklist/pipeline.py:1` is now a thin wrapper (backward compatible).
+     - Checklist rule engine is now “pure rules”:
+       - `backend/app/domain/checklist/rule_engine.py:1`
+       - `backend/app/domain/checklist/errors.py:1`
 
 2. Deprecate `backend/app/services/` implementations
    - Continue moving remaining implementations out of:
-     - `backend/app/services/analysis_import_service.py:1`
-     - `backend/app/services/legacy_checklist_source.py:1`
-     - `backend/app/services/medicine_rectify_scheduler.py:1`
+     - (none — remaining `services/*` are shims or true infra helpers)
+   - Done:
+     - `backend/app/infrastructure/scheduler/medicine_rectify_scheduler.py:1` (implementation)
+     - `backend/app/services/medicine_rectify_scheduler.py:1` (shim)
 
 3. Broaden repo extraction (optional hardening)
-   - Continue moving SQL access into `backend/app/repositories/*` for any remaining service modules that still call `db.execute(...)`.
+   - Done: domain layer no longer calls `db.execute(...)` directly (all DB queries now live in `backend/app/repositories/*`).
+   - Remaining optional hardening: consolidate older repo functions to the newer schema (avoid duplication inside repos).
+
+Recent repo extraction:
+
+- Decision persistence for checklist pipeline moved into repository:
+  - `backend/app/repositories/decision_results_repo.py:1`
+  - `backend/app/domain/checklist/pipeline.py:1` no longer does raw SQL inserts/updates for `decision_results`.
+- Checklist context + latest checklist query moved into repositories (removing `db.execute(...)` from checklist domain code):
+  - `backend/app/repositories/checklist_context_repo.py:1`
+  - `backend/app/repositories/decision_results_repo.py:1`
+  - `backend/app/domain/checklist/pipeline.py:1`
+- Documents domain moved to repositories (removing `db.execute(...)` from documents domain code):
+  - `backend/app/domain/documents/use_cases.py:1`
+  - `backend/app/repositories/claim_documents_repo.py:1` (new helpers for the newer `claim_documents` schema)
+- Extractions domain moved to repositories (removing `db.execute(...)` from extractions domain code):
+  - `backend/app/domain/extractions/use_cases.py:1`
+  - `backend/app/repositories/document_extractions_repo.py:1` (added newer schema helpers)

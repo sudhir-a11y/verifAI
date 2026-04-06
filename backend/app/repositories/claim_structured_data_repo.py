@@ -29,10 +29,7 @@ def ensure_table(db: Session) -> None:
     )
     db.execute(
         text(
-            """
-            CREATE INDEX IF NOT EXISTS idx_claim_structured_data_claim_id
-            ON claim_structured_data (claim_id)
-            """
+            "CREATE INDEX IF NOT EXISTS idx_claim_structured_data_claim_id ON claim_structured_data(claim_id)"
         ),
     )
 

@@ -125,3 +125,26 @@ def lookup_medicine_by_name(db: Session, medicine_name: str) -> dict[str, Any] |
         {"name": medicine_name},
     ).mappings().first()
     return dict(row) if row else None
+
+
+def load_high_end_antibiotic_catalog(db: Session, antibiotic_names: list[str]) -> list[dict[str, Any]]:
+    """Load high-end antibiotic entries from the medicine catalog."""
+    like_params: dict[str, Any] = {}
+    clauses: list[str] = ["is_high_end_antibiotic = TRUE"]
+    for idx, name in enumerate(antibiotic_names):
+        key = f"h{idx}"
+        clauses.append(f"LOWER(COALESCE(components, '')) LIKE :{key}")
+        like_params[key] = "%" + name.lower() + "%"
+
+    sql = (
+        "SELECT medicine_name, components, is_high_end_antibiotic "
+        "FROM medicine_component_lookup "
+        + "WHERE " + " OR ".join(clauses) + " "
+        + "ORDER BY medicine_name ASC"
+    )
+
+    try:
+        rows = db.execute(text(sql), like_params).mappings().all()
+    except Exception:
+        return []
+    return [dict(r) for r in rows]

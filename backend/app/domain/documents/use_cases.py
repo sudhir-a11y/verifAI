@@ -10,10 +10,10 @@ from urllib.parse import quote, unquote, urlparse
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from pypdf import PdfReader, PdfWriter
-from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.repositories import claim_documents_repo, claim_legacy_data_repo, claims_repo, workflow_events_repo
 
 from app.schemas.document import (
     DocumentBulkDeleteResponse,
@@ -96,11 +96,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _claim_exists(db: Session, claim_id: UUID) -> bool:
-    exists = db.execute(
-        text("SELECT 1 FROM claims WHERE id = :claim_id"),
-        {"claim_id": str(claim_id)},
-    ).first()
-    return exists is not None
+    return claims_repo.get_claim_by_id(db, claim_id) is not None
 
 
 def _normalize_http_url(value: Any) -> str:
@@ -228,10 +224,7 @@ def _first_direct_download_url(storage_key: str, metadata: dict[str, Any]) -> st
     return ""
 
 def _materialize_legacy_payload_documents(db: Session, claim_id: UUID) -> int:
-    legacy_row = db.execute(
-        text("SELECT legacy_payload FROM claim_legacy_data WHERE claim_id = :claim_id LIMIT 1"),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
+    legacy_row = claim_legacy_data_repo.get_by_claim_id(db, str(claim_id))
     if legacy_row is None:
         return 0
 
@@ -243,10 +236,7 @@ def _materialize_legacy_payload_documents(db: Session, claim_id: UUID) -> int:
     if not candidate_links:
         return 0
 
-    existing_rows = db.execute(
-        text("SELECT storage_key, metadata FROM claim_documents WHERE claim_id = :claim_id"),
-        {"claim_id": str(claim_id)},
-    ).mappings().all()
+    existing_rows = claim_documents_repo.list_storage_key_and_metadata_for_claim(db, claim_id=str(claim_id))
     existing_keys = {str(r.get("storage_key") or "").strip().lower() for r in existing_rows if str(r.get("storage_key") or "").strip()}
     existing_urls: set[str] = set()
     for row in existing_rows:
@@ -285,46 +275,15 @@ def _materialize_legacy_payload_documents(db: Session, claim_id: UUID) -> int:
             "imported_via": "auto_materialize",
         }
 
-        row = db.execute(
-            text(
-                """
-                INSERT INTO claim_documents (
-                    claim_id,
-                    storage_key,
-                    file_name,
-                    mime_type,
-                    file_size_bytes,
-                    checksum_sha256,
-                    parse_status,
-                    retention_class,
-                    uploaded_by,
-                    metadata
-                )
-                VALUES (
-                    :claim_id,
-                    :storage_key,
-                    :file_name,
-                    :mime_type,
-                    NULL,
-                    NULL,
-                    'succeeded',
-                    'standard',
-                    'legacy_sync',
-                    CAST(:metadata AS jsonb)
-                )
-                ON CONFLICT (claim_id, storage_key) DO NOTHING
-                RETURNING id
-                """
-            ),
-            {
-                "claim_id": str(claim_id),
-                "storage_key": storage_key,
-                "file_name": file_name,
-                "mime_type": guessed_mime or "application/pdf",
-                "metadata": json.dumps(metadata),
-            },
-        ).mappings().first()
-        if row is not None:
+        inserted_id = claim_documents_repo.insert_legacy_external_document_if_missing(
+            db,
+            claim_id=str(claim_id),
+            storage_key=storage_key,
+            file_name=file_name,
+            mime_type=guessed_mime or "application/pdf",
+            metadata=metadata,
+        )
+        if inserted_id is not None:
             inserted += 1
             existing_keys.add(storage_key.lower())
             existing_urls.add(normalized.lower())
@@ -346,10 +305,7 @@ def _materialize_s3_prefix_documents(db: Session, claim_id: UUID) -> int:
     if not settings.s3_bucket:
         return 0
 
-    claim_row = db.execute(
-        text("SELECT external_claim_id FROM claims WHERE id = :claim_id LIMIT 1"),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
+    claim_row = claims_repo.get_claim_by_id(db, claim_id)
     if claim_row is None:
         return 0
 
@@ -359,11 +315,12 @@ def _materialize_s3_prefix_documents(db: Session, claim_id: UUID) -> int:
 
     prefixes = [f"claims/{external_claim_id}/", f"claims//{external_claim_id}/"]
 
-    existing_rows = db.execute(
-        text("SELECT storage_key FROM claim_documents WHERE claim_id = :claim_id"),
-        {"claim_id": str(claim_id)},
-    ).mappings().all()
-    existing_keys = {str(r.get("storage_key") or "").strip().lower() for r in existing_rows if str(r.get("storage_key") or "").strip()}
+    existing_rows = claim_documents_repo.list_storage_key_and_metadata_for_claim(db, claim_id=str(claim_id))
+    existing_keys = {
+        str(r.get("storage_key") or "").strip().lower()
+        for r in existing_rows
+        if str(r.get("storage_key") or "").strip()
+    }
 
     client = _s3_client()
     inserted = 0
@@ -399,49 +356,16 @@ def _materialize_s3_prefix_documents(db: Session, claim_id: UUID) -> int:
                     "legacy_source": "s3_bucket_prefix",
                 }
 
-                row = db.execute(
-                    text(
-                        """
-                        INSERT INTO claim_documents (
-                            claim_id,
-                            storage_key,
-                            file_name,
-                            mime_type,
-                            file_size_bytes,
-                            checksum_sha256,
-                            parse_status,
-                            retention_class,
-                            uploaded_by,
-                            uploaded_at,
-                            metadata
-                        )
-                        VALUES (
-                            :claim_id,
-                            :storage_key,
-                            :file_name,
-                            :mime_type,
-                            :file_size_bytes,
-                            NULL,
-                            'succeeded',
-                            'standard',
-                            'legacy_sync',
-                            NOW(),
-                            CAST(:metadata AS jsonb)
-                        )
-                        ON CONFLICT (claim_id, storage_key) DO NOTHING
-                        RETURNING id
-                        """
-                    ),
-                    {
-                        "claim_id": str(claim_id),
-                        "storage_key": key,
-                        "file_name": file_name,
-                        "mime_type": guessed_mime or "application/pdf",
-                        "file_size_bytes": int(obj.get("Size") or 0),
-                        "metadata": json.dumps(metadata),
-                    },
-                ).mappings().first()
-                if row is not None:
+                inserted_id = claim_documents_repo.insert_s3_prefix_document_if_missing(
+                    db,
+                    claim_id=str(claim_id),
+                    storage_key=key,
+                    file_name=file_name,
+                    mime_type=guessed_mime or "application/pdf",
+                    file_size_bytes=int(obj.get("Size") or 0),
+                    metadata=metadata,
+                )
+                if inserted_id is not None:
                     inserted += 1
                     existing_keys.add(key.lower())
 
@@ -465,28 +389,6 @@ def ensure_legacy_documents_materialized(db: Session, claim_id: UUID) -> int:
     except Exception:
         db.rollback()
     return inserted
-
-def _emit_workflow_event(
-    db: Session,
-    claim_id: UUID,
-    event_type: str,
-    actor_id: str | None,
-    payload: dict[str, Any],
-) -> None:
-    db.execute(
-        text(
-            """
-            INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload)
-            VALUES (:claim_id, 'user', :actor_id, :event_type, CAST(:event_payload AS jsonb))
-            """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "actor_id": actor_id,
-            "event_type": event_type,
-            "event_payload": json.dumps(payload),
-        },
-    )
 
 
 def create_document(
@@ -514,67 +416,23 @@ def create_document(
         "etag": upload_result.get("etag"),
     }
 
-    row = db.execute(
-        text(
-            """
-            INSERT INTO claim_documents (
-                claim_id,
-                storage_key,
-                file_name,
-                mime_type,
-                file_size_bytes,
-                checksum_sha256,
-                parse_status,
-                retention_class,
-                uploaded_by,
-                metadata
-            )
-            VALUES (
-                :claim_id,
-                :storage_key,
-                :file_name,
-                :mime_type,
-                :file_size_bytes,
-                :checksum_sha256,
-                'pending',
-                :retention_class,
-                :uploaded_by,
-                CAST(:metadata AS jsonb)
-            )
-            RETURNING
-                id,
-                claim_id,
-                storage_key,
-                file_name,
-                mime_type,
-                file_size_bytes,
-                checksum_sha256,
-                parse_status,
-                page_count,
-                retention_class,
-                uploaded_by,
-                uploaded_at,
-                parsed_at,
-                metadata
-            """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "storage_key": object_key,
-            "file_name": safe_file_name,
-            "mime_type": mime_type,
-            "file_size_bytes": len(file_bytes),
-            "checksum_sha256": checksum,
-            "retention_class": retention_class,
-            "uploaded_by": uploaded_by,
-            "metadata": json.dumps(metadata),
-        },
-    ).mappings().one()
+    row = claim_documents_repo.insert_uploaded_document_returning_row(
+        db,
+        claim_id=str(claim_id),
+        storage_key=object_key,
+        file_name=safe_file_name,
+        mime_type=mime_type,
+        file_size_bytes=len(file_bytes),
+        checksum_sha256=checksum,
+        retention_class=retention_class,
+        uploaded_by=uploaded_by,
+        metadata=metadata,
+    )
 
     document = _to_document_response(dict(row))
-    _emit_workflow_event(
-        db=db,
-        claim_id=claim_id,
+    workflow_events_repo.emit_workflow_event(
+        db,
+        claim_id,
         event_type="document_uploaded",
         actor_id=uploaded_by,
         payload={"document_id": str(document.id), "storage_key": document.storage_key},
@@ -850,49 +708,16 @@ def create_merged_document(
         "merge_mode_requested": requested_mode,
     }
 
-    db.execute(
-        text(
-            """
-            UPDATE claim_documents
-            SET metadata = COALESCE(metadata, '{}'::jsonb) || CAST(:merge_meta AS jsonb)
-            WHERE id = :document_id
-            """
-        ),
-        {
-            "document_id": str(created.id),
-            "merge_meta": json.dumps(merge_meta),
-        },
-    )
-
-    row = db.execute(
-        text(
-            """
-            SELECT
-                id,
-                claim_id,
-                storage_key,
-                file_name,
-                mime_type,
-                file_size_bytes,
-                checksum_sha256,
-                parse_status,
-                page_count,
-                retention_class,
-                uploaded_by,
-                uploaded_at,
-                parsed_at,
-                metadata
-            FROM claim_documents
-            WHERE id = :document_id
-            """
-        ),
-        {"document_id": str(created.id)},
-    ).mappings().one()
+    claim_documents_repo.update_document_metadata_merge(db, document_id=str(created.id), merge_meta=merge_meta)
+    row = claim_documents_repo.get_document_row_by_id(db, document_id=str(created.id))
+    if row is None:
+        db.rollback()
+        raise DocumentNotFoundError
     document = _to_document_response(dict(row))
 
-    _emit_workflow_event(
-        db=db,
-        claim_id=claim_id,
+    workflow_events_repo.emit_workflow_event(
+        db,
+        claim_id,
         event_type="document_merge_uploaded",
         actor_id=uploaded_by,
         payload={
@@ -936,40 +761,14 @@ def list_documents(db: Session, claim_id: UUID, limit: int, offset: int) -> Docu
     except Exception:
         # Never block document listing because of legacy payload parsing/materialization errors.
         db.rollback()
-    params = {"claim_id": str(claim_id), "limit": limit, "offset": offset}
-    total = db.execute(
-        text("SELECT COUNT(*) FROM claim_documents WHERE claim_id = :claim_id"),
-        params,
-    ).scalar_one()
-
-    rows = db.execute(
-        text(
-            """
-            SELECT
-                id,
-                claim_id,
-                storage_key,
-                file_name,
-                mime_type,
-                file_size_bytes,
-                checksum_sha256,
-                parse_status,
-                page_count,
-                retention_class,
-                uploaded_by,
-                uploaded_at,
-                parsed_at,
-                metadata
-            FROM claim_documents
-            WHERE claim_id = :claim_id
-            ORDER BY uploaded_at DESC
-            LIMIT :limit OFFSET :offset
-            """
-        ),
-        params,
-    ).mappings().all()
-
-    items = [_to_document_response(dict(r)) for r in rows]
+    total = claim_documents_repo.count_by_claim_id(db, str(claim_id))
+    rows = claim_documents_repo.list_documents_paginated_for_claim(
+        db,
+        claim_id=str(claim_id),
+        limit=limit,
+        offset=offset,
+    )
+    items = [_to_document_response(r) for r in rows]
     return DocumentListResponse(total=total, items=items)
 
 
@@ -978,41 +777,19 @@ def update_document_parse_status(
     document_id: UUID,
     payload: DocumentParseStatusUpdateRequest,
 ) -> DocumentResponse:
-    row = db.execute(
-        text(
-            """
-            UPDATE claim_documents
-            SET parse_status = :parse_status,
-                parsed_at = CASE WHEN :parse_status = 'succeeded' THEN NOW() ELSE parsed_at END
-            WHERE id = :document_id
-            RETURNING
-                id,
-                claim_id,
-                storage_key,
-                file_name,
-                mime_type,
-                file_size_bytes,
-                checksum_sha256,
-                parse_status,
-                page_count,
-                retention_class,
-                uploaded_by,
-                uploaded_at,
-                parsed_at,
-                metadata
-            """
-        ),
-        {"document_id": str(document_id), "parse_status": payload.parse_status.value},
-    ).mappings().first()
-
+    row = claim_documents_repo.update_parse_status_returning_row(
+        db,
+        document_id=str(document_id),
+        parse_status=payload.parse_status.value,
+    )
     if row is None:
         db.rollback()
         raise DocumentNotFoundError
 
     document = _to_document_response(dict(row))
-    _emit_workflow_event(
-        db=db,
-        claim_id=document.claim_id,
+    workflow_events_repo.emit_workflow_event(
+        db,
+        document.claim_id,
         event_type="document_parse_status_updated",
         actor_id=payload.actor_id,
         payload={
@@ -1030,11 +807,7 @@ def get_document_download_url(
     document_id: UUID,
     expires_in: int,
 ) -> DocumentDownloadUrlResponse:
-    row = db.execute(
-        text("SELECT id, storage_key, metadata FROM claim_documents WHERE id = :document_id"),
-        {"document_id": str(document_id)},
-    ).mappings().first()
-
+    row = claim_documents_repo.get_storage_key_and_metadata_by_id(db, document_id=str(document_id))
     if row is None:
         raise DocumentNotFoundError
 
@@ -1088,24 +861,13 @@ def delete_documents(
             not_found_document_ids=[],
         )
 
-    select_query = text(
-        """
-        SELECT id, storage_key, metadata
-        FROM claim_documents
-        WHERE claim_id = :claim_id
-          AND id IN :document_ids
-        """
-    ).bindparams(bindparam("document_ids", expanding=True))
+    rows = claim_documents_repo.list_docs_for_bulk_delete(
+        db,
+        claim_id=str(claim_id),
+        document_ids=[str(doc_id) for doc_id in unique_doc_ids],
+    )
 
-    rows = db.execute(
-        select_query,
-        {
-            "claim_id": str(claim_id),
-            "document_ids": [str(doc_id) for doc_id in unique_doc_ids],
-        },
-    ).mappings().all()
-
-    found_map = {str(r["id"]): r for r in rows}
+    found_map = {str(r.get("id")): r for r in rows}
     not_found_ids = [doc_id for doc_id in unique_doc_ids if str(doc_id) not in found_map]
 
     deletable_ids: list[UUID] = []
@@ -1130,27 +892,21 @@ def delete_documents(
 
     deleted_ids: list[UUID] = []
     if deletable_ids:
-        delete_query = text(
-            """
-            DELETE FROM claim_documents
-            WHERE claim_id = :claim_id
-              AND id IN :document_ids
-            RETURNING id
-            """
-        ).bindparams(bindparam("document_ids", expanding=True))
+        deleted_rows = claim_documents_repo.delete_docs_for_claim_returning_ids(
+            db,
+            claim_id=str(claim_id),
+            document_ids=[str(doc_id) for doc_id in deletable_ids],
+        )
+        deleted_ids = []
+        for deleted_id in deleted_rows:
+            try:
+                deleted_ids.append(UUID(str(deleted_id)))
+            except Exception:
+                continue
 
-        deleted_rows = db.execute(
-            delete_query,
-            {
-                "claim_id": str(claim_id),
-                "document_ids": [str(doc_id) for doc_id in deletable_ids],
-            },
-        ).mappings().all()
-        deleted_ids = [r["id"] for r in deleted_rows]
-
-        _emit_workflow_event(
-            db=db,
-            claim_id=claim_id,
+        workflow_events_repo.emit_workflow_event(
+            db,
+            claim_id,
             event_type="document_deleted",
             actor_id=actor_id,
             payload={
@@ -1174,7 +930,6 @@ def delete_documents(
         failed_document_ids=failed_ids,
         not_found_document_ids=not_found_ids,
     )
-
 
 
 

@@ -1,6 +1,6 @@
-"""Compatibility shim — all symbols now live in app.ai.structuring."""
+"""AI claim structuring — LLM-based data field segregation."""
 
-from app.ai.structuring import (
+from app.ai.structuring.service import (
     ClaimStructuredDataNotFoundError,
     ClaimStructuringError,
     generate_claim_structured_data,
@@ -9,9 +9,9 @@ from app.ai.structuring import (
 )
 
 __all__ = [
-    "ClaimStructuredDataNotFoundError",
-    "ClaimStructuringError",
     "generate_claim_structured_data",
     "get_claim_structured_data",
     "sync_clean_provider_registry_for_claim",
+    "ClaimStructuringError",
+    "ClaimStructuredDataNotFoundError",
 ]

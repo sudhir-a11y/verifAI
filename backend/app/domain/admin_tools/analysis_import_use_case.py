@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
-from app.services.analysis_import_service import import_analysis_results_from_rows
+from app.domain.admin_tools.analysis_import_service import import_analysis_results_from_rows
 from app.services.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
 
 
@@ -36,4 +36,3 @@ def import_analysis_sql_dump(
         created_by_system=f"system:legacy_sql_import:{imported_by_username}",
     )
     return {"ok": True, "file": name, "limit": int(limit or 0), "imported_by": imported_by_username, **summary}
-

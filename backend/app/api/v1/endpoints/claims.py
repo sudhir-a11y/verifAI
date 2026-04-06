@@ -39,13 +39,13 @@ from app.schemas.claim import (
 from app.schemas.extraction import ExtractionProvider
 from app.services.access_control import doctor_matches_assignment
 from app.services.auth_service import AuthenticatedUser
-from app.ai.claim_structuring_service import (
+from app.ai.structuring import (
     ClaimStructuredDataNotFoundError,
     ClaimStructuringError,
     generate_claim_structured_data,
     get_claim_structured_data,
 )
-from app.ai.grammar_service import GrammarCheckError, grammar_check_report_html
+from app.ai.grammar import GrammarCheckError, grammar_check_report_html
 from app.domain.checklist.checklist_use_cases import (
     ClaimNotFoundError as ChecklistClaimNotFoundError,
     evaluate_claim_checklist,
@@ -428,6 +428,8 @@ def run_claim_pipeline_endpoint(
     force_checklist_source_refresh: bool = Query(default=False),
     generate_conclusion: bool = Query(default=False),
     use_ai_conclusion: bool = Query(default=False),
+    generate_report: bool = Query(default=False),
+    report_status: str = Query(default="completed", max_length=30),
     actor_id: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(
@@ -452,6 +454,8 @@ def run_claim_pipeline_endpoint(
         force_checklist_source_refresh=bool(force_checklist_source_refresh),
         generate_conclusion=bool(generate_conclusion),
         use_ai_conclusion=bool(use_ai_conclusion),
+        generate_report=bool(generate_report),
+        report_status=report_status,
     )
 
     checklist_payload = (
@@ -470,4 +474,6 @@ def run_claim_pipeline_endpoint(
         "conclusion_source": result.conclusion_source,
         "conclusion_triggered_rules_count": result.conclusion_triggered_rules_count,
         "report_version_no": result.report_version_no,
+        "report_saved": bool(result.report_saved),
+        "saved_report_version_no": result.saved_report_version_no,
     }
