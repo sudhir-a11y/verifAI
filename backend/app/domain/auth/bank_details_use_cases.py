@@ -1,7 +1,12 @@
 from sqlalchemy.orm import Session
 
 from app.repositories import user_bank_details_repo, users_repo
-from app.schemas.auth import UserBankDetailsItem, UserBankDetailsListResponse, UserRole
+from app.schemas.auth import (
+    UserBankDetailsItem,
+    UserBankDetailsListResponse,
+    UserBankDetailsUpsertRequest,
+    UserRole,
+)
 
 
 class UserNotFoundError(Exception):
@@ -10,6 +15,24 @@ class UserNotFoundError(Exception):
 
 class InvalidBankDetailsTargetError(ValueError):
     pass
+
+
+def _bank_text(value: str | None, max_len: int) -> str:
+    return str(value or "").strip()[: int(max_len or 0)]
+
+
+def sanitize_bank_details_upsert_payload(payload: UserBankDetailsUpsertRequest) -> dict[str, str | bool]:
+    return {
+        "account_holder_name": _bank_text(payload.account_holder_name, 255),
+        "bank_name": _bank_text(payload.bank_name, 255),
+        "branch_name": _bank_text(payload.branch_name, 255),
+        "account_number": _bank_text(payload.account_number, 64),
+        "payment_rate": _bank_text(payload.payment_rate, 64),
+        "ifsc_code": _bank_text(payload.ifsc_code, 32).upper(),
+        "upi_id": _bank_text(payload.upi_id, 255),
+        "notes": _bank_text(payload.notes, 2000),
+        "is_active": bool(payload.is_active),
+    }
 
 
 def list_user_bank_details(
@@ -116,3 +139,36 @@ def upsert_user_bank_details(
         updated_at=row.get("updated_at"),
     )
 
+
+def upsert_user_bank_details_from_payload(
+    db: Session,
+    *,
+    user_id: int,
+    payload: UserBankDetailsUpsertRequest,
+    actor: str,
+) -> UserBankDetailsItem:
+    sanitized = sanitize_bank_details_upsert_payload(payload)
+    return upsert_user_bank_details(
+        db,
+        user_id=int(user_id),
+        account_holder_name=str(sanitized["account_holder_name"]),
+        bank_name=str(sanitized["bank_name"]),
+        branch_name=str(sanitized["branch_name"]),
+        account_number=str(sanitized["account_number"]),
+        payment_rate=str(sanitized["payment_rate"]),
+        ifsc_code=str(sanitized["ifsc_code"]),
+        upi_id=str(sanitized["upi_id"]),
+        notes=str(sanitized["notes"]),
+        is_active=bool(sanitized["is_active"]),
+        actor=str(actor or "").strip()[:100],
+    )
+
+
+__all__ = [
+    "InvalidBankDetailsTargetError",
+    "UserNotFoundError",
+    "list_user_bank_details",
+    "sanitize_bank_details_upsert_payload",
+    "upsert_user_bank_details",
+    "upsert_user_bank_details_from_payload",
+]

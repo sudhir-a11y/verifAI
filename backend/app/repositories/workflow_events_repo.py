@@ -14,12 +14,13 @@ def emit_workflow_event(
     payload: dict[str, Any],
     *,
     actor_type: str = "user",
+    occurred_at: Any | None = None,
 ) -> None:
     db.execute(
         text(
             """
-            INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload)
-            VALUES (:claim_id, :actor_type, :actor_id, :event_type, CAST(:event_payload AS jsonb))
+            INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload, occurred_at)
+            VALUES (:claim_id, :actor_type, :actor_id, :event_type, CAST(:event_payload AS jsonb), COALESCE(:occurred_at, NOW()))
             """
         ),
         {
@@ -28,6 +29,7 @@ def emit_workflow_event(
             "actor_id": actor_id,
             "event_type": event_type,
             "event_payload": json.dumps(payload),
+            "occurred_at": occurred_at,
         },
     )
 
@@ -82,4 +84,3 @@ def list_workflow_events(
     total = count_result.mappings().first()["total"]
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
-

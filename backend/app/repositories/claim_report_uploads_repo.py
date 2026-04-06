@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -122,3 +126,71 @@ def upsert_qc_status(
         },
     ).mappings().one()
     return dict(row)
+
+
+def get_by_claim_id(db: Session, claim_id: str) -> dict[str, Any] | None:
+    """Get upload record for a claim."""
+    row = db.execute(
+        text(
+            "SELECT * FROM claim_report_uploads WHERE claim_id = :claim_id LIMIT 1"
+        ),
+        {"claim_id": claim_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def upsert_upload_metadata_partial(
+    db: Session,
+    *,
+    claim_id: str,
+    report_export_status: str,
+    tagging: str,
+    subtagging: str,
+    opinion: str,
+    qc_status: str,
+    updated_by: str,
+) -> None:
+    db.execute(
+        text(
+            """
+            INSERT INTO claim_report_uploads (
+                claim_id,
+                report_export_status,
+                tagging,
+                subtagging,
+                opinion,
+                qc_status,
+                updated_by,
+                updated_at
+            )
+            VALUES (
+                :claim_id,
+                COALESCE(NULLIF(:report_export_status, ''), 'pending'),
+                NULLIF(:tagging, ''),
+                NULLIF(:subtagging, ''),
+                NULLIF(:opinion, ''),
+                COALESCE(NULLIF(:qc_status, ''), 'no'),
+                :updated_by,
+                NOW()
+            )
+            ON CONFLICT (claim_id)
+            DO UPDATE SET
+                report_export_status = COALESCE(NULLIF(:report_export_status, ''), claim_report_uploads.report_export_status),
+                tagging = COALESCE(NULLIF(:tagging, ''), claim_report_uploads.tagging),
+                subtagging = COALESCE(NULLIF(:subtagging, ''), claim_report_uploads.subtagging),
+                opinion = COALESCE(NULLIF(:opinion, ''), claim_report_uploads.opinion),
+                qc_status = COALESCE(NULLIF(:qc_status, ''), claim_report_uploads.qc_status),
+                updated_by = COALESCE(NULLIF(:updated_by, ''), claim_report_uploads.updated_by),
+                updated_at = NOW()
+            """
+        ),
+        {
+            "claim_id": str(claim_id),
+            "report_export_status": str(report_export_status or ""),
+            "tagging": str(tagging or ""),
+            "subtagging": str(subtagging or ""),
+            "opinion": str(opinion or ""),
+            "qc_status": str(qc_status or ""),
+            "updated_by": str(updated_by or ""),
+        },
+    )

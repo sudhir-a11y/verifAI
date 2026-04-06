@@ -5,13 +5,17 @@ from sqlalchemy.orm import Session
 
 from app.api.deps.auth import require_roles
 from app.db.session import get_db
+from app.domain.extractions.use_cases import (
+    DocumentNotFoundError,
+    list_document_extractions,
+    run_document_extraction,
+)
 from app.schemas.auth import UserRole
 from app.schemas.extraction import ExtractionListResponse, ExtractionResponse, RunExtractionRequest
 from app.services.access_control import doctor_can_access_document
 from app.services.auth_service import AuthenticatedUser
-from app.services.extraction_providers import ExtractionConfigError, ExtractionProcessingError
-from app.services.extractions_service import DocumentNotFoundError, list_document_extractions, run_document_extraction
-from app.services.storage_service import StorageConfigError, StorageOperationError
+from app.ai.extraction_providers import ExtractionConfigError, ExtractionProcessingError
+from app.infrastructure.storage.storage_service import StorageConfigError, StorageOperationError
 
 router = APIRouter(tags=["extractions"])
 
@@ -63,4 +67,3 @@ def list_document_extractions_endpoint(
         return list_document_extractions(db, document_id, limit, offset)
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail="document not found") from exc
-

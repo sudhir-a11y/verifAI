@@ -4,10 +4,11 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import engine
+from app.repositories import claim_rules_repo, diagnosis_criteria_repo
 
 
 class ChecklistSourceError(Exception):
@@ -215,28 +216,9 @@ def _normalize_json_list(raw: Any) -> list[str]:
 
 def _load_from_modern_postgres() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     try:
-        with engine.connect() as conn:
-            raw_rules = conn.execute(
-                text(
-                    """
-                    SELECT rule_id, name, scope_json, conditions, decision, remark_template, severity, priority, required_evidence_json
-                    FROM openai_claim_rules
-                    WHERE is_active = TRUE
-                    ORDER BY priority ASC, rule_id ASC
-                    """
-                )
-            ).mappings().all()
-
-            raw_criteria = conn.execute(
-                text(
-                    """
-                    SELECT criteria_id, diagnosis_name, aliases_json, decision, remark_template, severity, priority, required_evidence_json
-                    FROM openai_diagnosis_criteria
-                    WHERE is_active = TRUE
-                    ORDER BY priority ASC, criteria_id ASC
-                    """
-                )
-            ).mappings().all()
+        with Session(engine) as db:
+            raw_rules = claim_rules_repo.load_active_claim_rules(db)
+            raw_criteria = diagnosis_criteria_repo.load_active_diagnosis_criteria(db)
     except Exception as exc:
         raise ChecklistSourceError(f"Modern DB checklist query failed: {exc}") from exc
 
@@ -387,41 +369,14 @@ def _upsert_catalog_to_modern_postgres(
 ) -> dict[str, int]:
     rules_upserted = 0
     criteria_upserted = 0
-    with engine.begin() as conn:
+    with Session(engine) as db:
         for rule in rules:
             rule_id = str(rule.get("rule_id") or "").strip().upper()
             name = str(rule.get("name") or "").strip()
             if not rule_id or not name:
                 continue
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO openai_claim_rules (
-                        rule_id, name, scope_json, conditions, decision, remark_template,
-                        severity, priority, required_evidence_json, is_active, updated_at,
-                        version, source
-                    )
-                    VALUES (
-                        :rule_id, :name, CAST(:scope_json AS jsonb), :conditions, :decision, :remark_template,
-                        :severity, :priority, CAST(:required_evidence_json AS jsonb), TRUE, NOW(),
-                        :version, :source
-                    )
-                    ON CONFLICT (rule_id)
-                    DO UPDATE SET
-                        name = EXCLUDED.name,
-                        scope_json = EXCLUDED.scope_json,
-                        conditions = EXCLUDED.conditions,
-                        decision = EXCLUDED.decision,
-                        remark_template = EXCLUDED.remark_template,
-                        severity = EXCLUDED.severity,
-                        priority = EXCLUDED.priority,
-                        required_evidence_json = EXCLUDED.required_evidence_json,
-                        is_active = TRUE,
-                        updated_at = NOW(),
-                        version = EXCLUDED.version,
-                        source = EXCLUDED.source
-                    """
-                ),
+            claim_rules_repo.upsert_claim_rule_catalog(
+                db,
                 {
                     "rule_id": rule_id,
                     "name": name,
@@ -446,35 +401,8 @@ def _upsert_catalog_to_modern_postgres(
             aliases = criterion.get("aliases") or []
             if diagnosis_name and diagnosis_name not in aliases:
                 aliases = [diagnosis_name] + list(aliases)
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO openai_diagnosis_criteria (
-                        criteria_id, diagnosis_name, diagnosis_key, aliases_json, decision,
-                        remark_template, severity, priority, required_evidence_json,
-                        is_active, updated_at, version, source
-                    )
-                    VALUES (
-                        :criteria_id, :diagnosis_name, :diagnosis_key, CAST(:aliases_json AS jsonb), :decision,
-                        :remark_template, :severity, :priority, CAST(:required_evidence_json AS jsonb),
-                        TRUE, NOW(), :version, :source
-                    )
-                    ON CONFLICT (criteria_id)
-                    DO UPDATE SET
-                        diagnosis_name = EXCLUDED.diagnosis_name,
-                        diagnosis_key = EXCLUDED.diagnosis_key,
-                        aliases_json = EXCLUDED.aliases_json,
-                        decision = EXCLUDED.decision,
-                        remark_template = EXCLUDED.remark_template,
-                        severity = EXCLUDED.severity,
-                        priority = EXCLUDED.priority,
-                        required_evidence_json = EXCLUDED.required_evidence_json,
-                        is_active = TRUE,
-                        updated_at = NOW(),
-                        version = EXCLUDED.version,
-                        source = EXCLUDED.source
-                    """
-                ),
+            diagnosis_criteria_repo.upsert_diagnosis_criteria_catalog(
+                db,
                 {
                     "criteria_id": criteria_id,
                     "diagnosis_name": diagnosis_name,
@@ -490,6 +418,8 @@ def _upsert_catalog_to_modern_postgres(
                 },
             )
             criteria_upserted += 1
+
+        db.commit()
 
     return {"rules_upserted": rules_upserted, "criteria_upserted": criteria_upserted}
 

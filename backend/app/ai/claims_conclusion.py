@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.ai.openai_chat import OpenAIChatError, chat_completions
+from app.ai.openai_chat import OpenAIChatError, chat_completions, extract_message_text
 from app.core.config import settings
 from app.domain.claims.report_conclusion import (
     extract_rule_code_from_entry,
@@ -17,26 +17,6 @@ _ALLOWED_CONCLUSION_ENDINGS = {
     "Therefore, the claim is recommended for rejection.",
     "Therefore, the claim is kept under query.",
 }
-
-
-def _extract_openai_response_text(body: dict) -> str:
-    if not isinstance(body, dict):
-        return ""
-    choices = body.get("choices") if isinstance(body.get("choices"), list) else []
-    first = choices[0] if choices else {}
-    message = first.get("message") if isinstance(first, dict) else {}
-    content = message.get("content") if isinstance(message, dict) else ""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        out: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                val = item.get("text") or item.get("content")
-                if isinstance(val, str) and val.strip():
-                    out.append(val.strip())
-        return "\n".join(out).strip()
-    return ""
 
 
 def _verdict_sentence_from_recommendation(recommendation: str) -> str:
@@ -161,7 +141,7 @@ def generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: dic
                 temperature=0.1,
                 timeout_s=120.0,
             )
-            raw = _extract_openai_response_text(body)
+            raw = extract_message_text(body)
             normalized = _normalize_ai_conclusion_paragraph(raw, recommendation)
             if normalized:
                 return normalized

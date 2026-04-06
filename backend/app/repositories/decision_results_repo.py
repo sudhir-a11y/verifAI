@@ -26,6 +26,96 @@ def delete_by_claim_id(db: Session, *, claim_id: str) -> int:
         db.execute(text("DELETE FROM decision_results WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
     )
 
+def deactivate_active_for_claim(db: Session, *, claim_id: str) -> None:
+    db.execute(
+        text(
+            """
+            UPDATE decision_results
+            SET is_active = FALSE
+            WHERE claim_id = :claim_id AND is_active = TRUE
+            """
+        ),
+        {"claim_id": str(claim_id)},
+    )
+
+
+def insert_integration_decision_result(
+    db: Session,
+    *,
+    claim_id: str,
+    actor_id: str,
+    recommendation: str,
+    route_target: str,
+    manual_review_required: bool,
+    review_priority: int,
+    explanation_summary: str | None,
+    decision_payload: dict[str, Any],
+    occurred_at: Any,
+) -> str:
+    import json
+
+    row = db.execute(
+        text(
+            """
+            INSERT INTO decision_results (
+                claim_id,
+                extraction_id,
+                rule_version,
+                model_version,
+                fraud_risk_score,
+                qc_risk_score,
+                consistency_checks,
+                rule_hits,
+                explanation_summary,
+                recommendation,
+                route_target,
+                manual_review_required,
+                review_priority,
+                decision_payload,
+                generated_by,
+                generated_at,
+                is_active
+            )
+            VALUES (
+                :claim_id,
+                NULL,
+                :rule_version,
+                :model_version,
+                NULL,
+                NULL,
+                CAST(:consistency_checks AS jsonb),
+                CAST(:rule_hits AS jsonb),
+                :explanation_summary,
+                CAST(:recommendation AS decision_recommendation),
+                :route_target,
+                :manual_review_required,
+                :review_priority,
+                CAST(:decision_payload AS jsonb),
+                :generated_by,
+                COALESCE(:generated_at, NOW()),
+                TRUE
+            )
+            RETURNING id
+            """
+        ),
+        {
+            "claim_id": str(claim_id),
+            "rule_version": "integration_teamrightworks_v1",
+            "model_version": "integration_external",
+            "consistency_checks": "[]",
+            "rule_hits": "[]",
+            "explanation_summary": explanation_summary,
+            "recommendation": recommendation,
+            "route_target": route_target,
+            "manual_review_required": bool(manual_review_required),
+            "review_priority": int(review_priority),
+            "decision_payload": json.dumps(decision_payload or {}),
+            "generated_by": str(actor_id or ""),
+            "generated_at": occurred_at,
+        },
+    ).mappings().one()
+    return str(row.get("id") or "") or ""
+
 
 def _system_actor_expr(column_expr: str) -> str:
     col = f"LOWER(COALESCE({column_expr}, ''))"
@@ -71,3 +161,43 @@ def get_latest_decision_report_html_for_claim(db: Session, *, claim_id: UUID, so
         {"claim_id": str(claim_id)},
     ).mappings().first()
     return dict(row) if row is not None else None
+
+
+def insert_decision_result(db: Session, params: dict[str, Any]) -> None:
+    """Insert a decision result."""
+    db.execute(
+        text(
+            """
+            INSERT INTO decision_results (
+                claim_id, recommendation, route_target, rule_hits,
+                explanation_summary, decision_payload, generated_by, generated_at
+            ) VALUES (
+                :claim_id, :recommendation, :route_target,
+                CAST(:rule_hits AS jsonb), :explanation_summary,
+                CAST(:decision_payload AS jsonb), :generated_by, NOW()
+            )
+            """
+        ),
+        params,
+    )
+
+
+def update_decision_analysis(db: Session, decision_id: str, analysis: dict[str, Any]) -> None:
+    """Update the legacy_analysis_id on a decision result."""
+    db.execute(
+        text(
+            "UPDATE decision_results SET legacy_analysis_id = :analysis_id WHERE id = :decision_id"
+        ),
+        {"analysis_id": analysis.get("id"), "decision_id": decision_id},
+    )
+
+
+def get_decision_by_legacy_analysis_id(db: Session, legacy_analysis_id: str) -> dict[str, Any] | None:
+    """Find a decision result by legacy_analysis_id."""
+    row = db.execute(
+        text(
+            "SELECT id, claim_id FROM decision_results WHERE legacy_analysis_id = :legacy_analysis_id LIMIT 1"
+        ),
+        {"legacy_analysis_id": legacy_analysis_id},
+    ).mappings().first()
+    return dict(row) if row else None

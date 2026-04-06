@@ -22,6 +22,7 @@ def insert_report_version(
     report_status: str,
     report_markdown: str,
     created_by: str,
+    created_at: Any | None = None,
 ) -> dict[str, Any]:
     row = db.execute(
         text(
@@ -33,7 +34,8 @@ def insert_report_version(
                 report_status,
                 report_markdown,
                 export_uri,
-                created_by
+                created_by,
+                created_at
             )
             VALUES (
                 :claim_id,
@@ -42,7 +44,8 @@ def insert_report_version(
                 :report_status,
                 :report_markdown,
                 '',
-                :created_by
+                :created_by,
+                COALESCE(:created_at, NOW())
             )
             RETURNING id, claim_id, decision_id, version_no, report_status, created_by, created_at
             """
@@ -54,6 +57,7 @@ def insert_report_version(
             "report_status": report_status,
             "report_markdown": report_markdown,
             "created_by": created_by,
+            "created_at": created_at,
         },
     ).mappings().one()
     return dict(row)
@@ -109,3 +113,21 @@ def get_latest_report_html_for_claim(db: Session, *, claim_id: UUID, source: str
         {"claim_id": str(claim_id)},
     ).mappings().first()
     return dict(row) if row is not None else None
+
+
+def count_by_claim_id(db: Session, claim_id: UUID) -> int:
+    """Count report versions for a claim."""
+    row = db.execute(
+        text("SELECT COUNT(*) FROM report_versions WHERE claim_id = :claim_id"),
+        {"claim_id": str(claim_id)},
+    ).first()
+    return int(row[0]) if row else 0
+
+
+def get_max_version_no(db: Session, claim_id: UUID) -> int:
+    """Get the max version number for a claim."""
+    row = db.execute(
+        text("SELECT COALESCE(MAX(version_no), 0) FROM report_versions WHERE claim_id = :claim_id"),
+        {"claim_id": str(claim_id)},
+    ).scalar_one()
+    return int(row or 0)

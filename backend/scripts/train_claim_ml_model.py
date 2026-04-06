@@ -7,7 +7,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.db.session import SessionLocal
-from app.services.ml_claim_model import ensure_model
+from app.ml import ensure_model
 
 
 def main() -> None:

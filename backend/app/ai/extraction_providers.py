@@ -11,6 +11,8 @@ import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from pypdf import PdfReader
 
+from app.ai.openai_chat import OpenAIChatError, chat_completions
+from app.ai.openai_responses import OpenAIResponsesError, extract_responses_text, responses_create
 from app.core.config import settings
 from app.schemas.extraction import ExtractionProvider
 
@@ -793,45 +795,17 @@ def _normalize_extracted_entities(raw_entities: Any, fallback_text: str = "") ->
     if not focused_has_content:
         normalized["detailed_conclusion"] = "No relevant medical details extracted from this document."
     return normalized
+
+
 def _extract_openai_response_text(body: Any) -> str:
-    if not isinstance(body, dict):
-        return ""
-
-    direct = body.get("output_text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-
-    output_chunks: list[str] = []
-    output = body.get("output")
-    if isinstance(output, list):
-        for out in output:
-            if not isinstance(out, dict):
-                continue
-            content = out.get("content")
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                t = item.get("text")
-                if isinstance(t, str) and t.strip():
-                    output_chunks.append(t.strip())
-        if output_chunks:
-            return "\n".join(output_chunks).strip()
-
-    msg = (((body.get("choices") or [{}])[0]).get("message") or {}) if isinstance(body.get("choices"), list) else {}
-    msg_content = msg.get("content") if isinstance(msg, dict) else ""
-    if isinstance(msg_content, str):
-        return msg_content.strip()
-    if isinstance(msg_content, list):
-        joined = []
-        for item in msg_content:
-            if isinstance(item, dict):
-                t = item.get("text") or item.get("content")
-                if isinstance(t, str) and t.strip():
-                    joined.append(t.strip())
-        return "\n".join(joined).strip()
-    return ""
+    """Extract text from either /responses or /chat/completions API output."""
+    # Try /responses format first
+    text = extract_responses_text(body)
+    if text:
+        return text
+    # Fallback to /chat/completions format
+    from app.ai.openai_chat import extract_message_text
+    return extract_message_text(body)
 
 
 def _parse_unstructured_claim_extraction(content: str) -> dict[str, Any]:
@@ -1512,12 +1486,6 @@ def _extract_openai(
             }
         )
 
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
     # Force single model for extraction to avoid fallback bursts and keep consistency.
     configured_model = "gpt-4.1-mini"
     model_candidates: list[str] = [configured_model]
@@ -1532,14 +1500,9 @@ def _extract_openai(
     used_model = configured_model
     rate_limited = False
 
-    def _status_detail(exc: httpx.HTTPStatusError) -> tuple[int | str, str]:
-        status = exc.response.status_code if exc.response is not None else "unknown"
-        detail = ""
-        try:
-            detail = (exc.response.text or "")[:800] if exc.response is not None else ""
-        except Exception:
-            detail = ""
-        return status, detail
+    def _status_detail(status_code: int | None, response_text: str) -> tuple[int | str, str]:
+        status: int | str = status_code if status_code is not None else "unknown"
+        return status, (response_text or "")[:800]
 
     def _looks_like_model_not_found(status: int | str, detail: str) -> bool:
         d = (detail or "").lower()
@@ -1549,7 +1512,6 @@ def _extract_openai(
             return True
         return False
 
-    responses_url = f"{base_url}/responses"
     for candidate in model_candidates:
         responses_payload = {
             "model": candidate,
@@ -1570,10 +1532,7 @@ def _extract_openai(
             ],
         }
         try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(responses_url, headers=headers, json=responses_payload)
-                response.raise_for_status()
-            body = response.json()
+            body = responses_create(responses_payload, timeout_s=120.0)
             if isinstance(body, dict):
                 last_openai_body = body
                 response_source = "responses"
@@ -1584,8 +1543,8 @@ def _extract_openai(
                 parsed = _parse_json_payload(model_output_text)
             if parsed is not None:
                 break
-        except httpx.HTTPStatusError as exc:
-            status, detail = _status_detail(exc)
+        except OpenAIResponsesError as exc:
+            status, detail = _status_detail(exc.status_code, exc.response_text)
             responses_errors.append(f"{candidate} => HTTP {status}: {detail}")
             if status == 429:
                 rate_limited = True
@@ -1596,24 +1555,21 @@ def _extract_openai(
 
     if parsed is None:
         fallback_prompt = user_prompt + "\nDocument text preview:\n" + (text_preview or "(none)")
-        url = f"{base_url}/chat/completions"
         for candidate in model_candidates:
-            request_payload = {
-                "model": candidate,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a medical-claim extraction service. Return strict JSON only with extracted_entities, evidence_refs, confidence.",
-                    },
-                    {"role": "user", "content": fallback_prompt},
-                ],
-            }
             try:
-                with httpx.Client(timeout=90.0) as client:
-                    response = client.post(url, headers=headers, json=request_payload)
-                    response.raise_for_status()
-                body = response.json()
+                body = chat_completions(
+                    [
+                        {
+                            "role": "system",
+                            "content": "You are a medical-claim extraction service. Return strict JSON only with extracted_entities, evidence_refs, confidence.",
+                        },
+                        {"role": "user", "content": fallback_prompt},
+                    ],
+                    model=candidate,
+                    temperature=0.0,
+                    timeout_s=90.0,
+                    extra={"response_format": {"type": "json_object"}},
+                )
                 if isinstance(body, dict):
                     last_openai_body = body
                     response_source = "chat.completions"
@@ -1623,8 +1579,8 @@ def _extract_openai(
                 parsed = _parse_json_payload(model_output_text) if model_output_text else None
                 if parsed is not None:
                     break
-            except httpx.HTTPStatusError as exc:
-                status, detail = _status_detail(exc)
+            except OpenAIChatError as exc:
+                status, detail = _status_detail(exc.status_code, exc.response_text)
                 chat_errors.append(f"{candidate} => HTTP {status}: {detail}")
                 if status == 429:
                     rate_limited = True
@@ -1771,7 +1727,6 @@ def run_extraction(
         except (ExtractionConfigError, ExtractionProcessingError):
             return _extract_local(document_name, mime_type, payload)
     return _extract_local(document_name, mime_type, payload)
-
 
 
 

@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.ai.openai_responses import OpenAIResponsesError, extract_responses_text, responses_create
 
 
 FIELD_KEYS: list[str] = [
@@ -375,28 +376,8 @@ def _json_obj(raw: str) -> dict[str, Any] | None:
 
 
 def _extract_openai_text(body: Any) -> str:
-    if not isinstance(body, dict):
-        return ""
-    direct = body.get("output_text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-    out: list[str] = []
-    output = body.get("output")
-    if isinstance(output, list):
-        for row in output:
-            if not isinstance(row, dict):
-                continue
-            content = row.get("content")
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if isinstance(item, dict):
-                    t = item.get("text")
-                    if isinstance(t, str) and t.strip():
-                        out.append(t.strip())
-    if out:
-        return "\n".join(out).strip()
-    return ""
+    """Delegate to shared extractor."""
+    return extract_responses_text(body)
 
 
 def _ensure_table(db: Session) -> None:
@@ -2033,8 +2014,6 @@ def _llm_fields(ctx: dict[str, Any]) -> tuple[dict[str, str], float | None]:
         raise ClaimStructuringError("OPENAI_API_KEY not configured")
 
     model = str(settings.openai_rag_model or settings.openai_model or "gpt-4o-mini").strip() or "gpt-4o-mini"
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    headers = {"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"}
 
     prompt = (
         "You are a medical-claim data segregation engine. Return strict JSON only.\n"
@@ -2058,10 +2037,11 @@ def _llm_fields(ctx: dict[str, Any]) -> tuple[dict[str, str], float | None]:
     }
 
     try:
-        with httpx.Client(timeout=120.0) as client:
-            response = client.post(f"{base_url}/responses", headers=headers, json=payload)
-            response.raise_for_status()
-        body = response.json()
+        body = responses_create(payload, timeout_s=120.0)
+    except OpenAIResponsesError as exc:
+        raise ClaimStructuringError(
+            f"LLM structured segregation failed: HTTP {exc.status_code or 'unknown'}: {exc}"
+        ) from exc
     except Exception as exc:
         raise ClaimStructuringError(f"LLM structured segregation failed: {exc}") from exc
 
@@ -2488,7 +2468,6 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
         raise ClaimStructuringError(f"failed to save structured data: {exc}") from exc
 
     return _to_response(saved)
-
 
 
 

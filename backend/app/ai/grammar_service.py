@@ -5,8 +5,7 @@ import re
 import threading
 from typing import Any
 
-import httpx
-
+from app.ai.openai_chat import OpenAIChatError, chat_completions, extract_message_text
 from app.core.config import settings
 
 try:
@@ -22,25 +21,6 @@ class GrammarCheckError(Exception):
 _LANGUAGE_TOOL_LOCK = threading.Lock()
 _LANGUAGE_TOOL_INSTANCE: Any | None = None
 _LANGUAGE_TOOL_PROVIDER = ""
-
-
-def _extract_openai_response_text(body: Any) -> str:
-    if not isinstance(body, dict):
-        return ""
-
-    msg = (((body.get("choices") or [{}])[0]).get("message") or {}) if isinstance(body.get("choices"), list) else {}
-    msg_content = msg.get("content") if isinstance(msg, dict) else ""
-    if isinstance(msg_content, str):
-        return msg_content.strip()
-    if isinstance(msg_content, list):
-        joined: list[str] = []
-        for item in msg_content:
-            if isinstance(item, dict):
-                t = item.get("text") or item.get("content")
-                if isinstance(t, str) and t.strip():
-                    joined.append(t.strip())
-        return "\n".join(joined).strip()
-    return ""
 
 
 def _parse_json_dict_from_text(raw_text: str) -> dict[str, Any] | None:
@@ -178,13 +158,6 @@ def _run_grammar_batch_openai(segments: list[str]) -> tuple[list[str], str]:
     if not segments:
         return [], ""
 
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
     prompt = (
         "You are a medical-report grammar checker. "
         "Fix grammar, punctuation, and sentence flow only. "
@@ -201,21 +174,19 @@ def _run_grammar_batch_openai(segments: list[str]) -> tuple[list[str], str]:
 
     errors: list[str] = []
     for candidate in model_candidates:
-        request_payload = {
-            "model": candidate,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": "Return strict JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-        }
         try:
-            with httpx.Client(timeout=90.0) as client:
-                response = client.post(url, headers=headers, json=request_payload)
-                response.raise_for_status()
-            body = response.json()
+            body = chat_completions(
+                [
+                    {"role": "system", "content": "Return strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                model=candidate,
+                temperature=0.0,
+                timeout_s=90.0,
+                extra={"response_format": {"type": "json_object"}},
+            )
             used_model = str(body.get("model") or candidate)
-            raw_output = _extract_openai_response_text(body)
+            raw_output = extract_message_text(body)
             parsed = _parse_json_dict_from_text(raw_output)
             if not isinstance(parsed, dict):
                 errors.append(f"{candidate}: invalid_json")
@@ -225,6 +196,8 @@ def _run_grammar_batch_openai(segments: list[str]) -> tuple[list[str], str]:
                 errors.append(f"{candidate}: invalid_segments")
                 continue
             return [str(x or "") for x in corrected], used_model
+        except OpenAIChatError as exc:
+            errors.append(f"{candidate}: HTTP {exc.status_code or 'unknown'}: {exc}")
         except Exception as exc:
             errors.append(f"{candidate}: {exc}")
 

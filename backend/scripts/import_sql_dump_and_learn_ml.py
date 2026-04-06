@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.db.session import SessionLocal
-from app.services.ml_claim_model import ensure_model, generate_alignment_feedback_labels
+from app.ml import ensure_model, generate_alignment_feedback_labels
 from app.services.sql_dump_parser import iter_table_rows_from_sql_dump_path
 
 

@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from passlib.context import CryptContext
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.repositories import auth_logs_repo, user_sessions_repo, users_repo
 from app.schemas.auth import AuthUserResponse, CreateUserRequest, UserListResponse, UserRole
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -81,23 +81,15 @@ def _log_auth_attempt(
     user_agent: str,
     legacy_auth_log_id: int | None = None,
 ) -> None:
-    db.execute(
-        text(
-            """
-            INSERT INTO auth_logs (legacy_auth_log_id, user_id, username, role, ip_address, user_agent, success)
-            VALUES (:legacy_auth_log_id, :user_id, :username, :role, :ip_address, :user_agent, :success)
-            ON CONFLICT (legacy_auth_log_id) DO NOTHING
-            """
-        ),
-        {
-            "legacy_auth_log_id": legacy_auth_log_id,
-            "user_id": user_id,
-            "username": username,
-            "role": role.value,
-            "ip_address": ip_address[:45] if ip_address else "unknown",
-            "user_agent": (user_agent or "unknown")[:255],
-            "success": success,
-        },
+    auth_logs_repo.log_auth_attempt(
+        db,
+        legacy_auth_log_id=legacy_auth_log_id,
+        user_id=user_id,
+        username=username,
+        role=role.value,
+        ip_address=ip_address[:45] if ip_address else "unknown",
+        user_agent=(user_agent or "unknown")[:255],
+        success=success,
     )
 
 
@@ -111,17 +103,7 @@ def authenticate_and_create_session(
     username_raw = str(username or "").strip()
     username_norm = re.sub(r"\s+", "", username_raw).lower()
 
-    user_row = db.execute(
-        text(
-            """
-            SELECT id, username, password_hash, role, is_active
-            FROM users
-            WHERE REPLACE(LOWER(username), ' ', '') = :username_norm
-            LIMIT 1
-            """
-        ),
-        {"username_norm": username_norm},
-    ).mappings().first()
+    user_row = users_repo.get_user_by_username(db, username_norm)
 
     role_for_log = UserRole.user
     if user_row is not None:
@@ -156,19 +138,12 @@ def authenticate_and_create_session(
     token_hash = _hash_token(raw_token)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.auth_session_hours)
 
-    db.execute(
-        text(
-            """
-            INSERT INTO user_sessions (user_id, token_hash, role_snapshot, expires_at)
-            VALUES (:user_id, :token_hash, :role_snapshot, :expires_at)
-            """
-        ),
-        {
-            "user_id": user.id,
-            "token_hash": token_hash,
-            "role_snapshot": user.role.value,
-            "expires_at": expires_at,
-        },
+    user_sessions_repo.create_session(
+        db,
+        user_id=user.id,
+        token_hash=token_hash,
+        role_snapshot=user.role.value,
+        expires_at=expires_at,
     )
     _log_auth_attempt(db, user.id, user.username, user.role, True, ip_address, user_agent)
     db.commit()
@@ -181,21 +156,7 @@ def get_user_by_token(db: Session, raw_token: str) -> AuthenticatedUser | None:
         return None
 
     token_hash = _hash_token(raw_token)
-    row = db.execute(
-        text(
-            """
-            SELECT u.id, u.username, u.role, u.is_active
-            FROM user_sessions s
-            JOIN users u ON u.id = s.user_id
-            WHERE s.token_hash = :token_hash
-              AND s.revoked_at IS NULL
-              AND s.expires_at > NOW()
-            LIMIT 1
-            """
-        ),
-        {"token_hash": token_hash},
-    ).mappings().first()
-
+    row = user_sessions_repo.get_user_by_token(db, token_hash)
     if row is None:
         return None
 
@@ -209,19 +170,9 @@ def get_user_by_token(db: Session, raw_token: str) -> AuthenticatedUser | None:
 
 def revoke_session(db: Session, raw_token: str) -> bool:
     token_hash = _hash_token(raw_token)
-    updated = db.execute(
-        text(
-            """
-            UPDATE user_sessions
-            SET revoked_at = NOW()
-            WHERE token_hash = :token_hash
-              AND revoked_at IS NULL
-            """
-        ),
-        {"token_hash": token_hash},
-    ).rowcount
+    user_sessions_repo.revoke_session(db, token_hash)
     db.commit()
-    return bool(updated)
+    return True
 
 
 def create_user_account(db: Session, payload: CreateUserRequest) -> AuthUserResponse:
@@ -230,22 +181,14 @@ def create_user_account(db: Session, payload: CreateUserRequest) -> AuthUserResp
         raise ValueError(policy_error)
 
     try:
-        row = db.execute(
-            text(
-                """
-                INSERT INTO users (username, password_hash, role, is_active)
-                VALUES (:username, :password_hash, :role, TRUE)
-                RETURNING id, username, role, is_active
-                """
-            ),
-            {
-                "username": payload.username.strip(),
-                "password_hash": hash_password(payload.password),
-                "role": payload.role.value,
-            },
-        ).mappings().one()
+        row = users_repo.insert_user(
+            db,
+            username=payload.username.strip(),
+            password_hash=hash_password(payload.password),
+            role=payload.role.value,
+        )
         db.commit()
-        return AuthUserResponse.model_validate(dict(row))
+        return AuthUserResponse.model_validate(row)
     except IntegrityError as exc:
         db.rollback()
         if getattr(exc.orig, "sqlstate", None) == "23505":
@@ -254,44 +197,26 @@ def create_user_account(db: Session, payload: CreateUserRequest) -> AuthUserResp
 
 
 def list_users(db: Session, limit: int = 100, offset: int = 0) -> UserListResponse:
-    total = db.execute(text("SELECT COUNT(*) FROM users")).scalar_one()
-    rows = db.execute(
-        text(
-            """
-            SELECT id, username, role, is_active
-            FROM users
-            ORDER BY username ASC
-            LIMIT :limit OFFSET :offset
-            """
-        ),
-        {"limit": limit, "offset": offset},
-    ).mappings().all()
-    items = [AuthUserResponse.model_validate(dict(row)) for row in rows]
+    total = users_repo.count_users(db)
+    rows = users_repo.list_users(db, limit=limit, offset=offset)
+    items = [AuthUserResponse.model_validate(row) for row in rows]
     return UserListResponse(total=total, items=items)
 
 
 def change_own_password(db: Session, user_id: int, current_password: str, new_password: str) -> None:
-    row = db.execute(
-        text("SELECT id, password_hash FROM users WHERE id = :user_id LIMIT 1"),
-        {"user_id": user_id},
-    ).mappings().first()
-
-    if row is None:
+    password_hash = users_repo.get_user_password_hash(db, user_id)
+    if password_hash is None:
         raise UserNotFoundError
 
-    if not verify_password(current_password, str(row["password_hash"])):
+    if not verify_password(current_password, password_hash):
         raise AuthenticationError("current password is incorrect")
 
     policy_error = _password_policy_error(new_password)
     if policy_error is not None:
         raise ValueError(policy_error)
 
-    db.execute(
-        text("UPDATE users SET password_hash = :password_hash WHERE id = :user_id"),
-        {"user_id": user_id, "password_hash": hash_password(new_password)},
-    )
+    users_repo.update_user_password(db, user_id, hash_password(new_password))
     db.commit()
-
 
 
 def admin_reset_user_password(db: Session, username: str, role: UserRole | None, new_password: str) -> None:
@@ -299,35 +224,24 @@ def admin_reset_user_password(db: Session, username: str, role: UserRole | None,
     if policy_error is not None:
         raise ValueError(policy_error)
 
-    row = db.execute(
-        text("SELECT id, role FROM users WHERE username = :username LIMIT 1"),
-        {"username": username.strip()},
-    ).mappings().first()
-
+    row = users_repo.get_user_by_username(db, username.strip())
     if row is None:
         raise UserNotFoundError
 
     if role is not None and str(row.get("role")) != role.value:
         raise ValueError("username exists but role does not match")
 
-    db.execute(
-        text("UPDATE users SET password_hash = :password_hash WHERE id = :id"),
-        {"id": int(row["id"]), "password_hash": hash_password(new_password)},
-    )
+    users_repo.update_user_password(db, int(row["id"]), hash_password(new_password))
     db.commit()
+
 
 def ensure_bootstrap_super_admin(db: Session, username: str, password: str) -> None:
     if not username or not password:
         return
 
-    existing = db.execute(
-        text("SELECT id FROM users WHERE username = :username LIMIT 1"),
-        {"username": username},
-    ).mappings().first()
-
+    existing = users_repo.get_user_by_username(db, username)
     if existing is not None:
         return
 
     payload = CreateUserRequest(username=username, password=password, role=UserRole.super_admin)
     create_user_account(db, payload)
-

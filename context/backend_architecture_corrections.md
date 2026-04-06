@@ -145,7 +145,7 @@ Progress update:
 - Auth routes: removed raw SQL from `backend/app/api/v1/endpoints/auth.py` for:
   - doctor usernames list
   - user bank-details (ensure table, list, upsert)
-  using:
+    using:
   - `backend/app/repositories/users_repo.py`
   - `backend/app/repositories/user_bank_details_repo.py`
   - `backend/app/domain/auth/bank_details_use_cases.py`
@@ -178,6 +178,10 @@ Progress update:
   - `backend/app/repositories/allotment_reporting_repo.py`
   - Updated route in `backend/app/api/v1/endpoints/user_tools.py`
 
+- User tools (allotment claims slice): moved `/allotment-date-wise/claims` query (count + paginated rows) into:
+  - `backend/app/repositories/allotment_reporting_repo.py#list_allotment_date_wise_claims`
+  - Updated route in `backend/app/api/v1/endpoints/user_tools.py`
+
 ### Step 3 — split AI calls into `app/ai/` (OpenAI/httpx out of routes)
 
 Deliverables:
@@ -200,6 +204,18 @@ Still left within Step 3:
 
 - Remove duplicated legacy AI code in `backend/app/claims.py` (if that module is still used anywhere).
 - Move other AI/LLM calls from other endpoints/services into `app/ai/`.
+
+Update:
+
+- Centralized all OpenAI HTTP traffic (both `chat/completions` and `/responses`) into `backend/app/ai/`:
+  - `backend/app/ai/openai_chat.py`
+  - `backend/app/ai/openai_responses.py`
+- Refactored service modules to use the AI layer (no direct OpenAI URLs outside `app/ai/`):
+  - `backend/app/services/grammar_service.py`
+  - `backend/app/services/checklist_pipeline.py`
+  - `backend/app/services/claim_structuring_service.py`
+  - `backend/app/services/extraction_providers.py`
+- Converted legacy `backend/app/claims.py` into a router re-export shim (no duplicated OpenAI logic).
 
 ### Step 4 — formalize workflows (pipeline orchestration)
 

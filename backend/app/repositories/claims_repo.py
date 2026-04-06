@@ -1,5 +1,6 @@
 import json
 import re
+import json
 from typing import Any
 from uuid import UUID
 
@@ -190,6 +191,117 @@ def get_claim_id_by_external_id_and_source(
     return str(row.get("id") or "") or None
 
 
+def get_claim_row_by_external_claim_id(db: Session, *, external_claim_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT id, external_claim_id
+            FROM claims
+            WHERE external_claim_id = :external_claim_id
+            LIMIT 1
+            """
+        ),
+        {"external_claim_id": str(external_claim_id)},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def insert_claim_from_integration(
+    db: Session,
+    *,
+    external_claim_id: str,
+    patient_name: str | None,
+    patient_identifier: str | None,
+    status: str,
+    assigned_doctor_id: str | None,
+    priority: int,
+    source_channel: str,
+    tags: list[str],
+) -> dict[str, Any]:
+    row = db.execute(
+        text(
+            """
+            INSERT INTO claims (
+                external_claim_id,
+                patient_name,
+                patient_identifier,
+                status,
+                assigned_doctor_id,
+                priority,
+                source_channel,
+                tags,
+                completed_at
+            )
+            VALUES (
+                :external_claim_id,
+                :patient_name,
+                :patient_identifier,
+                CAST(:status AS claim_status),
+                :assigned_doctor_id,
+                :priority,
+                :source_channel,
+                CAST(:tags AS jsonb),
+                CASE WHEN CAST(:status AS claim_status) = 'completed'::claim_status THEN NOW() ELSE NULL END
+            )
+            RETURNING id, external_claim_id
+            """
+        ),
+        {
+            "external_claim_id": str(external_claim_id),
+            "patient_name": patient_name,
+            "patient_identifier": patient_identifier,
+            "status": str(status),
+            "assigned_doctor_id": assigned_doctor_id,
+            "priority": int(priority),
+            "source_channel": str(source_channel or ""),
+            "tags": json.dumps(tags or []),
+        },
+    ).mappings().one()
+    return dict(row)
+
+
+def update_claim_from_integration(
+    db: Session,
+    *,
+    claim_id: str,
+    patient_name: str,
+    patient_identifier: str,
+    assigned_doctor_id: str,
+    status: str,
+    priority: int,
+    source_channel: str,
+    tags: list[str] | None,
+) -> None:
+    db.execute(
+        text(
+            """
+            UPDATE claims
+            SET
+                patient_name = COALESCE(NULLIF(:patient_name, ''), patient_name),
+                patient_identifier = COALESCE(NULLIF(:patient_identifier, ''), patient_identifier),
+                assigned_doctor_id = COALESCE(NULLIF(:assigned_doctor_id, ''), assigned_doctor_id),
+                status = COALESCE(CAST(:status AS claim_status), status),
+                completed_at = CASE WHEN CAST(:status AS claim_status) = 'completed'::claim_status THEN COALESCE(completed_at, NOW()) ELSE completed_at END,
+                priority = COALESCE(:priority, priority),
+                source_channel = COALESCE(NULLIF(:source_channel, ''), source_channel),
+                tags = COALESCE(CAST(:tags_json AS jsonb), tags),
+                updated_at = NOW()
+            WHERE id = :claim_id
+            """
+        ),
+        {
+            "claim_id": str(claim_id),
+            "patient_name": str(patient_name or ""),
+            "patient_identifier": str(patient_identifier or ""),
+            "assigned_doctor_id": str(assigned_doctor_id or ""),
+            "status": str(status),
+            "priority": int(priority),
+            "source_channel": str(source_channel or ""),
+            "tags_json": json.dumps(tags) if tags is not None else None,
+        },
+    )
+
+
 def _normalize_doctor_token(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
@@ -352,3 +464,73 @@ def assign_claim_row(
 
     row = db.execute(sql_stmt, params).mappings().first()
     return dict(row) if row is not None else None
+
+
+def claim_exists(db: Session, claim_id: UUID) -> bool:
+    """Check if a claim exists by id."""
+    row = db.execute(
+        text("SELECT 1 FROM claims WHERE id = :claim_id LIMIT 1"),
+        {"claim_id": str(claim_id)},
+    ).first()
+    return row is not None
+
+
+def get_claim_by_external_id(db: Session, external_claim_id: str, source_channel: str) -> dict[str, Any] | None:
+    """Get a claim by external ID and source channel."""
+    row = db.execute(
+        text(
+            """
+            SELECT * FROM claims
+            WHERE external_claim_id = :external_claim_id
+              AND COALESCE(source_channel, '') = :source_channel
+            LIMIT 1
+            """
+        ),
+        {"external_claim_id": external_claim_id, "source_channel": source_channel},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def bulk_upsert_claims(db: Session, claims: list[dict[str, Any]]) -> int:
+    """Bulk upsert claims. Returns the number of rows affected."""
+    if not claims:
+        return 0
+    result = db.execute(
+        text(
+            """
+            INSERT INTO claims (
+                external_claim_id, patient_name, patient_identifier,
+                status, assigned_doctor_id, priority, source_channel, tags
+            ) VALUES (
+                :external_claim_id, :patient_name, :patient_identifier,
+                :status, :assigned_doctor_id, :priority, :source_channel,
+                CAST(:tags AS jsonb)
+            )
+            ON CONFLICT (external_claim_id, source_channel) DO UPDATE
+            SET patient_name = EXCLUDED.patient_name,
+                patient_identifier = EXCLUDED.patient_identifier,
+                status = EXCLUDED.status,
+                assigned_doctor_id = EXCLUDED.assigned_doctor_id,
+                priority = EXCLUDED.priority,
+                tags = EXCLUDED.tags,
+                updated_at = NOW()
+            """
+        ),
+        claims,
+    )
+    return int(result.rowcount or 0)
+
+
+def get_assigned_doctor_ids_for_teamrightworks(db: Session) -> list[str]:
+    """Get all assigned doctor IDs for teamrightworks claims."""
+    rows = db.execute(
+        text(
+            """
+            SELECT assigned_doctor_id
+            FROM claims
+            WHERE COALESCE(source_channel, '') = 'teamrightworks.in'
+              AND COALESCE(assigned_doctor_id, '') <> ''
+            """
+        ),
+    ).mappings().all()
+    return [str(r.get("assigned_doctor_id") or "") for r in rows if r.get("assigned_doctor_id")]

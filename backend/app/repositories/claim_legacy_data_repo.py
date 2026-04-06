@@ -1,8 +1,15 @@
+"""Repository for claim_legacy_data table."""
+
+from __future__ import annotations
+
+from typing import Any
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-def ensure_claim_legacy_data_table(db: Session) -> None:
+def ensure_table(db: Session) -> None:
+    """Ensure the claim_legacy_data table exists."""
     db.execute(
         text(
             """
@@ -18,3 +25,39 @@ def ensure_claim_legacy_data_table(db: Session) -> None:
     )
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_claim_legacy_data_claim_id ON claim_legacy_data(claim_id)"))
 
+
+def ensure_claim_legacy_data_table(db: Session) -> None:
+    """Backward-compatible alias."""
+    ensure_table(db)
+
+
+def get_by_claim_id(db: Session, claim_id: str) -> dict[str, Any] | None:
+    """Get legacy data for a claim."""
+    row = db.execute(
+        text(
+            "SELECT * FROM claim_legacy_data WHERE claim_id = :claim_id LIMIT 1"
+        ),
+        {"claim_id": claim_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def upsert_legacy_data(db: Session, claim_id: str, legacy_payload: dict[str, Any]) -> None:
+    """Insert or update legacy data for a claim."""
+    import json
+
+    db.execute(
+        text(
+            """
+            INSERT INTO claim_legacy_data (claim_id, legacy_payload)
+            VALUES (:claim_id, CAST(:legacy_payload AS jsonb))
+            ON CONFLICT (claim_id) DO UPDATE
+            SET legacy_payload = EXCLUDED.legacy_payload,
+                updated_at = NOW()
+            """
+        ),
+        {
+            "claim_id": claim_id,
+            "legacy_payload": json.dumps(legacy_payload),
+        },
+    )

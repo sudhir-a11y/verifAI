@@ -16,9 +16,7 @@ from app.schemas.document import (
     DocumentParseStatusUpdateRequest,
     DocumentResponse,
 )
-from app.services.access_control import doctor_can_access_claim, doctor_can_access_document
-from app.services.auth_service import AuthenticatedUser
-from app.services.documents_service import (
+from app.domain.documents.documents_use_cases import (
     ClaimNotFoundError,
     DocumentMergeError,
     DocumentNotFoundError,
@@ -29,7 +27,9 @@ from app.services.documents_service import (
     list_documents,
     update_document_parse_status,
 )
-from app.services.storage_service import StorageConfigError, StorageOperationError
+from app.services.access_control import doctor_can_access_claim, doctor_can_access_document
+from app.services.auth_service import AuthenticatedUser
+from app.infrastructure.storage.storage_service import StorageConfigError, StorageOperationError
 
 router = APIRouter(tags=["documents"])
 
@@ -217,7 +217,5 @@ def get_document_download_url_endpoint(
         raise HTTPException(status_code=500, detail=f"storage config error: {exc}") from exc
     except StorageOperationError as exc:
         raise HTTPException(status_code=502, detail=f"storage operation error: {exc}") from exc
-
-
 
 

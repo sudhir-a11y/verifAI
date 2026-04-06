@@ -5,12 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.api.deps.auth import require_roles
 from app.db.session import get_db
+from app.domain.checklist.checklist_use_cases import (
+    ClaimNotFoundError,
+    evaluate_claim_checklist,
+    get_latest_claim_checklist,
+)
+from app.domain.checklist.ml_use_cases import generate_alignment_labels, train_checklist_model
 from app.schemas.auth import UserRole
 from app.schemas.checklist import ChecklistLatestResponse, ChecklistRunRequest, ChecklistRunResponse
 from app.services.access_control import doctor_can_access_claim
 from app.services.auth_service import AuthenticatedUser
-from app.services.checklist_pipeline import ClaimNotFoundError, get_latest_claim_checklist, run_claim_checklist_pipeline
-from app.services.ml_claim_model import ensure_model, generate_alignment_feedback_labels
 
 router = APIRouter(tags=["checklist"])
 
@@ -28,7 +32,7 @@ def evaluate_claim_checklist_endpoint(
             raise HTTPException(status_code=403, detail="doctor can access only assigned claims")
 
     try:
-        return run_claim_checklist_pipeline(
+        return evaluate_claim_checklist(
             db=db,
             claim_id=claim_id,
             actor_id=payload.actor_id or current_user.username,
@@ -63,11 +67,11 @@ def train_checklist_ml_model_endpoint(
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin)),
 ) -> dict:
     try:
-        model = ensure_model(db=db, force_retrain=True)
+        model = train_checklist_model(db=db, force_retrain=True)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"ML training failed: {exc}") from exc
 
-    if not isinstance(model, dict):
+    if model is None:
         raise HTTPException(status_code=400, detail="ML model could not be trained (insufficient labeled data)")
 
     return {
@@ -89,7 +93,7 @@ def generate_alignment_labels_endpoint(
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin)),
 ) -> dict:
     try:
-        summary = generate_alignment_feedback_labels(
+        summary = generate_alignment_labels(
             db=db,
             created_by=f"system:ml_alignment:{current_user.username}",
             overwrite=overwrite,
@@ -105,5 +109,4 @@ def generate_alignment_labels_endpoint(
         "generated_by": current_user.username,
         **summary,
     }
-
 
