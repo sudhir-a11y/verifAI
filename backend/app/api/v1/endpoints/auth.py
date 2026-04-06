@@ -2,12 +2,18 @@
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.deps.auth import get_bearer_token, get_current_user, require_roles
 from app.core.config import settings
 from app.db.session import get_db
+from app.domain.auth.bank_details_use_cases import (
+    InvalidBankDetailsTargetError,
+    UserNotFoundError as BankDetailsUserNotFoundError,
+    list_user_bank_details,
+    upsert_user_bank_details,
+)
+from app.repositories import users_repo
 from app.schemas.auth import (
     AuthUserResponse,
     CreateUserRequest,
@@ -36,34 +42,6 @@ from app.services.auth_service import (
     revoke_session,
 )
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-def _ensure_user_bank_details_table(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS user_bank_details (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-                account_holder_name VARCHAR(255) NOT NULL DEFAULT '',
-                bank_name VARCHAR(255) NOT NULL DEFAULT '',
-                branch_name VARCHAR(255) NOT NULL DEFAULT '',
-                account_number VARCHAR(64) NOT NULL DEFAULT '',
-                payment_rate VARCHAR(64) NOT NULL DEFAULT '',
-                ifsc_code VARCHAR(32) NOT NULL DEFAULT '',
-                upi_id VARCHAR(255) NOT NULL DEFAULT '',
-                notes TEXT NOT NULL DEFAULT '',
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_by VARCHAR(100) NOT NULL DEFAULT '',
-                updated_by VARCHAR(100) NOT NULL DEFAULT '',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-    )
-    db.execute(text("ALTER TABLE user_bank_details ADD COLUMN IF NOT EXISTS payment_rate VARCHAR(64) NOT NULL DEFAULT ''"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_user_bank_details_user_id ON user_bank_details(user_id)"))
 
 
 def _bank_text(value: str | None, max_len: int) -> str:
@@ -212,36 +190,7 @@ def list_doctor_usernames_endpoint(
         require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)
     ),
 ) -> dict:
-    rows = db.execute(
-        text(
-            """
-            WITH user_doctors AS (
-                SELECT LOWER(TRIM(username)) AS username
-                FROM users
-                WHERE is_active = TRUE
-                  AND role IN ('doctor', 'super_admin')
-                  AND NULLIF(TRIM(username), '') IS NOT NULL
-            ),
-            assigned_doctors AS (
-                SELECT LOWER(TRIM(doctor_token)) AS username
-                FROM claims c
-                CROSS JOIN LATERAL UNNEST(
-                    string_to_array(REPLACE(COALESCE(c.assigned_doctor_id, ''), ' ', ''), ',')
-                ) AS doctor_token
-                WHERE NULLIF(TRIM(doctor_token), '') IS NOT NULL
-            )
-            SELECT DISTINCT username
-            FROM (
-                SELECT username FROM user_doctors
-                UNION ALL
-                SELECT username FROM assigned_doctors
-            ) merged
-            WHERE NULLIF(TRIM(username), '') IS NOT NULL
-            ORDER BY username ASC
-            """
-        )
-    ).mappings().all()
-    items = [str(row.get("username") or "").strip() for row in rows if str(row.get("username") or "").strip()]
+    items = users_repo.list_doctor_usernames(db)
     return {"total": len(items), "items": items}
 
 
@@ -262,105 +211,7 @@ def list_user_bank_details_endpoint(
     db: Session = Depends(get_db),
     _current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin)),
 ) -> UserBankDetailsListResponse:
-    _ensure_user_bank_details_table(db)
-
-    search_text = str(search or "").strip().lower()
-    params = {
-        "search": f"%{search_text}%" if search_text else "",
-        "limit": int(limit),
-        "offset": int(offset),
-    }
-
-    total = int(
-        db.execute(
-            text(
-                """
-                SELECT COUNT(*)
-                FROM users u
-                LEFT JOIN user_bank_details ubd ON ubd.user_id = u.id
-                WHERE CAST(u.role AS TEXT) IN ('super_admin', 'doctor')
-                  AND (
-                       :search = ''
-                    OR LOWER(u.username) LIKE :search
-                    OR LOWER(CAST(u.role AS TEXT)) LIKE :search
-                    OR LOWER(COALESCE(ubd.account_holder_name, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.bank_name, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.branch_name, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.account_number, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.payment_rate, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.ifsc_code, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.upi_id, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.notes, '')) LIKE :search
-                  )
-                """
-            ),
-            params,
-        ).scalar_one()
-    )
-
-    rows = db.execute(
-        text(
-            """
-            SELECT
-                u.id AS user_id,
-                u.username,
-                CAST(u.role AS TEXT) AS role,
-                u.is_active AS user_is_active,
-                COALESCE(ubd.account_holder_name, '') AS account_holder_name,
-                COALESCE(ubd.bank_name, '') AS bank_name,
-                COALESCE(ubd.branch_name, '') AS branch_name,
-                COALESCE(ubd.account_number, '') AS account_number,
-                COALESCE(ubd.payment_rate, '') AS payment_rate,
-                COALESCE(ubd.ifsc_code, '') AS ifsc_code,
-                COALESCE(ubd.upi_id, '') AS upi_id,
-                COALESCE(ubd.notes, '') AS notes,
-                COALESCE(ubd.is_active, TRUE) AS bank_is_active,
-                COALESCE(ubd.updated_by, '') AS updated_by,
-                ubd.updated_at AS updated_at
-            FROM users u
-                LEFT JOIN user_bank_details ubd ON ubd.user_id = u.id
-                WHERE CAST(u.role AS TEXT) IN ('super_admin', 'doctor')
-                  AND (
-                       :search = ''
-                    OR LOWER(u.username) LIKE :search
-                    OR LOWER(CAST(u.role AS TEXT)) LIKE :search
-                    OR LOWER(COALESCE(ubd.account_holder_name, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.bank_name, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.branch_name, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.account_number, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.payment_rate, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.ifsc_code, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.upi_id, '')) LIKE :search
-                    OR LOWER(COALESCE(ubd.notes, '')) LIKE :search
-                  )
-            ORDER BY LOWER(u.username) ASC
-            LIMIT :limit OFFSET :offset
-            """
-        ),
-        params,
-    ).mappings().all()
-
-    items = [
-        UserBankDetailsItem(
-            user_id=int(r.get("user_id") or 0),
-            username=str(r.get("username") or ""),
-            role=UserRole(str(r.get("role") or "user")),
-            user_is_active=bool(r.get("user_is_active")),
-            account_holder_name=str(r.get("account_holder_name") or ""),
-            bank_name=str(r.get("bank_name") or ""),
-            branch_name=str(r.get("branch_name") or ""),
-            account_number=str(r.get("account_number") or ""),
-            payment_rate=str(r.get("payment_rate") or ""),
-            ifsc_code=str(r.get("ifsc_code") or ""),
-            upi_id=str(r.get("upi_id") or ""),
-            notes=str(r.get("notes") or ""),
-            bank_is_active=bool(r.get("bank_is_active")),
-            updated_by=str(r.get("updated_by") or ""),
-            updated_at=r.get("updated_at"),
-        )
-        for r in rows
-    ]
-    return UserBankDetailsListResponse(total=total, limit=int(limit), offset=int(offset), items=items)
+    return list_user_bank_details(db, search=search, limit=limit, offset=offset)
 
 
 @router.put("/user-bank-details/{user_id}", response_model=UserBankDetailsItem)
@@ -370,19 +221,6 @@ def upsert_user_bank_details_endpoint(
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin)),
 ) -> UserBankDetailsItem:
-    _ensure_user_bank_details_table(db)
-
-    user_row = db.execute(
-        text("SELECT id, username, CAST(role AS TEXT) AS role, is_active FROM users WHERE id = :user_id LIMIT 1"),
-        {"user_id": int(user_id)},
-    ).mappings().first()
-    if user_row is None:
-        raise HTTPException(status_code=404, detail="user not found")
-
-    target_role = str(user_row.get("role") or "").strip().lower()
-    if target_role not in {"super_admin", "doctor"}:
-        raise HTTPException(status_code=400, detail="bank details can only be updated for super_admin or doctor users")
-
     account_holder_name = _bank_text(payload.account_holder_name, 255)
     bank_name = _bank_text(payload.bank_name, 255)
     branch_name = _bank_text(payload.branch_name, 255)
@@ -392,117 +230,25 @@ def upsert_user_bank_details_endpoint(
     upi_id = _bank_text(payload.upi_id, 255)
     notes = _bank_text(payload.notes, 2000)
     actor = str(current_user.username or "").strip()[:100]
-
-    db.execute(
-        text(
-            """
-            INSERT INTO user_bank_details (
-                user_id,
-                account_holder_name,
-                bank_name,
-                branch_name,
-                account_number,
-                payment_rate,
-                ifsc_code,
-                upi_id,
-                notes,
-                is_active,
-                created_by,
-                updated_by
-            )
-            VALUES (
-                :user_id,
-                :account_holder_name,
-                :bank_name,
-                :branch_name,
-                :account_number,
-                :payment_rate,
-                :ifsc_code,
-                :upi_id,
-                :notes,
-                :is_active,
-                :actor,
-                :actor
-            )
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                account_holder_name = EXCLUDED.account_holder_name,
-                bank_name = EXCLUDED.bank_name,
-                branch_name = EXCLUDED.branch_name,
-                account_number = EXCLUDED.account_number,
-                payment_rate = EXCLUDED.payment_rate,
-                ifsc_code = EXCLUDED.ifsc_code,
-                upi_id = EXCLUDED.upi_id,
-                notes = EXCLUDED.notes,
-                is_active = EXCLUDED.is_active,
-                updated_by = EXCLUDED.updated_by,
-                updated_at = NOW()
-            """
-        ),
-        {
-            "user_id": int(user_id),
-            "account_holder_name": account_holder_name,
-            "bank_name": bank_name,
-            "branch_name": branch_name,
-            "account_number": account_number,
-            "payment_rate": payment_rate,
-            "ifsc_code": ifsc_code,
-            "upi_id": upi_id,
-            "notes": notes,
-            "is_active": bool(payload.is_active),
-            "actor": actor,
-        },
-    )
-    db.commit()
-
-    row = db.execute(
-        text(
-            """
-            SELECT
-                u.id AS user_id,
-                u.username,
-                CAST(u.role AS TEXT) AS role,
-                u.is_active AS user_is_active,
-                COALESCE(ubd.account_holder_name, '') AS account_holder_name,
-                COALESCE(ubd.bank_name, '') AS bank_name,
-                COALESCE(ubd.branch_name, '') AS branch_name,
-                COALESCE(ubd.account_number, '') AS account_number,
-                COALESCE(ubd.payment_rate, '') AS payment_rate,
-                COALESCE(ubd.ifsc_code, '') AS ifsc_code,
-                COALESCE(ubd.upi_id, '') AS upi_id,
-                COALESCE(ubd.notes, '') AS notes,
-                COALESCE(ubd.is_active, TRUE) AS bank_is_active,
-                COALESCE(ubd.updated_by, '') AS updated_by,
-                ubd.updated_at AS updated_at
-            FROM users u
-            LEFT JOIN user_bank_details ubd ON ubd.user_id = u.id
-            WHERE u.id = :user_id
-            LIMIT 1
-            """
-        ),
-        {"user_id": int(user_id)},
-    ).mappings().first()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="user not found")
-
-    return UserBankDetailsItem(
-        user_id=int(row.get("user_id") or 0),
-        username=str(row.get("username") or ""),
-        role=UserRole(str(row.get("role") or "user")),
-        user_is_active=bool(row.get("user_is_active")),
-        account_holder_name=str(row.get("account_holder_name") or ""),
-        bank_name=str(row.get("bank_name") or ""),
-        branch_name=str(row.get("branch_name") or ""),
-        account_number=str(row.get("account_number") or ""),
-        payment_rate=str(row.get("payment_rate") or ""),
-        ifsc_code=str(row.get("ifsc_code") or ""),
-        upi_id=str(row.get("upi_id") or ""),
-        notes=str(row.get("notes") or ""),
-        bank_is_active=bool(row.get("bank_is_active")),
-        updated_by=str(row.get("updated_by") or ""),
-        updated_at=row.get("updated_at"),
-    )
+    try:
+        return upsert_user_bank_details(
+            db,
+            user_id=int(user_id),
+            account_holder_name=account_holder_name,
+            bank_name=bank_name,
+            branch_name=branch_name,
+            account_number=account_number,
+            payment_rate=payment_rate,
+            ifsc_code=ifsc_code,
+            upi_id=upi_id,
+            notes=notes,
+            is_active=bool(payload.is_active),
+            actor=actor,
+        )
+    except BankDetailsUserNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="user not found") from exc
+    except InvalidBankDetailsTargetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 @router.post("/users/reset-password")
 def reset_user_password_endpoint(
     payload: ResetUserPasswordRequest,
@@ -531,10 +277,6 @@ def change_password_endpoint(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-
-
 
 
 

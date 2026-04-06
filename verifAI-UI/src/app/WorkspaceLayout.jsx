@@ -1,7 +1,9 @@
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useAuth } from "./auth";
 import { NAV, PAGE_TITLES, ROLE_LABELS } from "./nav";
+import { getStorageItem, setStorageItem } from "../lib/storage";
+import { useClaimSync } from "../lib/claimSync";
 
 function titleFor(page) {
   return PAGE_TITLES[page] || "Workspace";
@@ -13,20 +15,47 @@ export default function WorkspaceLayout() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const role = String(user?.role || "user");
+  const actualRole = String(user?.role || "user");
+  const [actingRole, setActingRole] = useState(() => {
+    const stored = getStorageItem("qc_acting_role");
+    return stored && actualRole === "super_admin" ? stored : actualRole;
+  });
+
+  const role = actualRole === "super_admin" ? actingRole : actualRole;
   const links = NAV[role] || NAV.user;
   const activePage = page || "dashboard";
   const title = titleFor(activePage);
 
+  useEffect(() => {
+    if (actualRole !== "super_admin") {
+      setActingRole(actualRole);
+    }
+  }, [actualRole]);
+
+  useEffect(() => {
+    if (actualRole === "super_admin") {
+      setStorageItem("qc_acting_role", actingRole);
+    }
+  }, [actingRole, actualRole]);
+
+  // Claim sync: listen for claim updates from other tabs
+  const broadcastClaimUpdate = useClaimSync();
+
   const headerSubtitle = useMemo(() => {
     if (!user) return "";
     const roleLabel = ROLE_LABELS[role] || role;
-    return `${user.username} • ${roleLabel}`;
-  }, [user, role]);
+    const actingLabel = actualRole === "super_admin" && role !== actualRole ? ` (acting as ${roleLabel})` : "";
+    return `${user.username} • ${roleLabel}${actingLabel}`;
+  }, [user, role, actualRole]);
 
   async function onLogout() {
     await logout();
     navigate("/login", { replace: true });
+  }
+
+  function handleRoleSwitch(newRole) {
+    setActingRole(newRole);
+    navigate(`/app/dashboard`);
   }
 
   return (
@@ -37,7 +66,25 @@ export default function WorkspaceLayout() {
             <div className="text-sm font-semibold">VerifAI</div>
             <div className="text-xs text-slate-600">{headerSubtitle}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {actualRole === "super_admin" && (
+              <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <label htmlFor="acting-role-switch" className="text-xs font-semibold text-slate-600">
+                  Role
+                </label>
+                <select
+                  id="acting-role-switch"
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm font-semibold outline-none focus:border-slate-500"
+                  value={actingRole}
+                  onChange={(e) => handleRoleSwitch(e.target.value)}
+                >
+                  <option value="super_admin">Super Admin</option>
+                  <option value="doctor">Doctor</option>
+                  <option value="user">User</option>
+                  <option value="auditor">Auditor</option>
+                </select>
+              </div>
+            )}
             <span className="hidden text-xs text-slate-500 sm:inline">{title}</span>
             <button
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"

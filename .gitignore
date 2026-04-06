@@ -5,6 +5,7 @@ __pycache__/
 venv/
 
 *.pem
+.codex
 
 # Scratch / investigations (keep repo root clean)
 tmp_*

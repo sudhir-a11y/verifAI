@@ -25,6 +25,15 @@ from app.schemas.qc_tools import (
 from app.services.auth_service import AuthenticatedUser, hash_password
 from app.services.analysis_import_service import import_analysis_results_from_rows
 from app.services.sql_dump_parser import iter_table_rows_from_sql_dump_bytes
+from app.repositories import (
+    claim_documents_repo,
+    claim_report_uploads_repo,
+    claims_repo,
+    decision_results_repo,
+    document_extractions_repo,
+    feedback_labels_repo,
+    report_versions_repo,
+)
 router = APIRouter(prefix="/admin", tags=["admin-tools"])
 
 
@@ -160,52 +169,19 @@ def _reset_claims_to_raw_mode(db: Session, external_claim_ids: list[str]) -> dic
         return stats
 
     for external_claim_id in cleaned_ids:
-        claim_row = db.execute(
-            text(
-                """
-                SELECT id
-                FROM claims
-                WHERE external_claim_id = :external_claim_id
-                  AND COALESCE(source_channel, '') = 'teamrightworks.in'
-                LIMIT 1
-                """
-            ),
-            {"external_claim_id": external_claim_id},
-        ).mappings().first()
-        if claim_row is None:
+        claim_id = claims_repo.get_claim_id_by_external_id_and_source(
+            db, external_claim_id=external_claim_id, source_channel="teamrightworks.in"
+        )
+        if not claim_id:
             continue
 
-        claim_id = str(claim_row["id"])
         stats["claims_touched"] += 1
-        stats["report_versions_deleted"] += int(
-            db.execute(text("DELETE FROM report_versions WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-        )
-        stats["claim_report_uploads_deleted"] += int(
-            db.execute(text("DELETE FROM claim_report_uploads WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-        )
-        stats["feedback_labels_deleted"] += int(
-            db.execute(text("DELETE FROM feedback_labels WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-        )
-        stats["decision_results_deleted"] += int(
-            db.execute(text("DELETE FROM decision_results WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-        )
-        stats["document_extractions_deleted"] += int(
-            db.execute(text("DELETE FROM document_extractions WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-        )
-        stats["documents_reset"] += int(
-            db.execute(
-                text(
-                    """
-                    UPDATE claim_documents
-                    SET parse_status = 'pending',
-                        parsed_at = NULL
-                    WHERE claim_id = :claim_id
-                    """
-                ),
-                {"claim_id": claim_id},
-            ).rowcount
-            or 0
-        )
+        stats["report_versions_deleted"] += report_versions_repo.delete_by_claim_id(db, claim_id=claim_id)
+        stats["claim_report_uploads_deleted"] += claim_report_uploads_repo.delete_by_claim_id(db, claim_id=claim_id)
+        stats["feedback_labels_deleted"] += feedback_labels_repo.delete_by_claim_id(db, claim_id=claim_id)
+        stats["decision_results_deleted"] += decision_results_repo.delete_by_claim_id(db, claim_id=claim_id)
+        stats["document_extractions_deleted"] += document_extractions_repo.delete_by_claim_id(db, claim_id=claim_id)
+        stats["documents_reset"] += claim_documents_repo.reset_parse_status(db, claim_id=claim_id)
 
     return stats
 
@@ -1400,7 +1376,6 @@ async def import_analysis_sql_dump(
         "imported_by": current_user.username,
         **summary,
     }
-
 
 
 

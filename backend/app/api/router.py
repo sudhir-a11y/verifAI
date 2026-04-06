@@ -9,6 +9,7 @@ from app.api.v1.endpoints.extractions import router as extractions_router
 from app.api.v1.endpoints.health import router as health_router
 from app.api.v1.endpoints.integrations import router as integrations_router
 from app.api.v1.endpoints.user_tools import router as user_tools_router
+from app.api.v1.endpoints.workflow_events import router as workflow_events_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -20,3 +21,4 @@ api_router.include_router(documents_router)
 api_router.include_router(extractions_router)
 api_router.include_router(checklist_router)
 api_router.include_router(user_tools_router)
+api_router.include_router(workflow_events_router)

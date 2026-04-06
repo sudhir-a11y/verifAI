@@ -37,3 +37,31 @@ export function setAccessToken(token) {
 		// intentionally silent (storage may be blocked)
 	}
 }
+
+export function getStorageItem(key) {
+	if (!isBrowser()) return null;
+	try {
+		const value = localStorage.getItem(key);
+		if (value === null) return null;
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
+	} catch {
+		return null;
+	}
+}
+
+export function setStorageItem(key, value) {
+	if (!isBrowser()) return;
+	try {
+		if (value === null || value === undefined) {
+			localStorage.removeItem(key);
+		} else {
+			localStorage.setItem(key, JSON.stringify(value));
+		}
+	} catch {
+		// intentionally silent (storage may be blocked)
+	}
+}

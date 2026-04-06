@@ -1,17 +1,22 @@
-﻿import json
-import re
+﻿import re
 from uuid import UUID
-from html import unescape
-
-import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.api.deps.auth import require_roles
-from app.core.config import settings
+from app.ai.claims_conclusion import generate_ai_medico_legal_conclusion
 from app.db.session import get_db
+from app.domain.claims.events import try_record_workflow_event
+from app.domain.claims.report_conclusion import (
+    extract_auditor_learning_from_report_html,
+    extract_feedback_label_from_report_html,
+    feedback_label_from_decision_recommendation,
+    strip_html_to_readable_text,
+    strip_html_to_text,
+)
+from app.domain.claims.reports_use_cases import save_claim_report_html
+from app.domain.claims.validation import InvalidDoctorAssignmentError, normalize_single_doctor_id
 from app.schemas.auth import UserRole
 from app.schemas.claim import (
     ClaimAssignmentRequest,
@@ -57,88 +62,29 @@ router = APIRouter(prefix="/claims", tags=["claims"])
 
 
 def _normalize_single_doctor_id(raw: str) -> str:
-    doctor_id = (raw or "").strip()
-    if not doctor_id:
-        raise HTTPException(status_code=400, detail="assigned_doctor_id is required")
-    if "," in doctor_id:
-        raise HTTPException(status_code=400, detail="A case can be assigned to only one doctor")
-    return doctor_id
+    try:
+        return normalize_single_doctor_id(raw)
+    except InvalidDoctorAssignmentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _strip_html_to_text(html: str) -> str:
-    raw = str(html or "")
-    raw = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", raw)
-    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
-    raw = unescape(raw)
-    return re.sub(r"\s+", " ", raw).strip().lower()
+    return strip_html_to_text(html)
 
 
 def _extract_feedback_label_from_report_html(report_html: str) -> str | None:
-    text_value = _strip_html_to_text(report_html)
-    if not text_value:
-        return None
-
-    if "final recommendation" in text_value:
-        if re.search(r"\b(inadmissible|reject(?:ion|ed)?|not justified)\b", text_value):
-            return "reject"
-        if re.search(r"\b(admissible|approve(?:d)?|payable|justified)\b", text_value):
-            return "approve"
-        if re.search(r"\b(query|need more evidence|manual review|uncertain)\b", text_value):
-            return "need_more_evidence"
-
-    if re.search(r"\bclaim is recommended for rejection\b", text_value):
-        return "reject"
-    if re.search(r"\bclaim is payable\b", text_value):
-        return "approve"
-    if re.search(r"\bclaim is kept in query\b", text_value):
-        return "need_more_evidence"
-
-    return None
+    return extract_feedback_label_from_report_html(report_html)
 
 
 def _feedback_label_from_decision_recommendation(raw: str | None) -> str | None:
-    recommendation = str(raw or "").strip().lower()
-    if recommendation in {"approve", "approved", "admissible", "payable"}:
-        return "approve"
-    if recommendation in {"reject", "rejected", "inadmissible"}:
-        return "reject"
-    if recommendation in {"need_more_evidence", "query", "manual_review"}:
-        return "need_more_evidence"
-    return None
+    return feedback_label_from_decision_recommendation(raw)
 
 def _strip_html_to_readable_text(html: str) -> str:
-    raw = str(html or "")
-    raw = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", raw)
-    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
-    raw = re.sub(r"(?i)</(p|div|tr|li|section|article|h[1-6])>", "\n", raw)
-    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
-    raw = unescape(raw)
-    lines = [re.sub(r"\s+", " ", line).strip() for line in str(raw).splitlines()]
-    lines = [line for line in lines if line]
-    return "\n".join(lines).strip()
+    return strip_html_to_readable_text(html)
 
 
 def _extract_auditor_learning_from_report_html(report_html: str) -> str | None:
-    raw = str(report_html or "")
-    if not raw.strip():
-        return None
-
-    # Prefer structured table row: <th>Conclusion</th><td>...</td>
-    match = re.search(r"(?is)<th[^>]*>\s*Conclusion\s*</th>\s*<td[^>]*>(.*?)</td>", raw)
-    candidate = _strip_html_to_readable_text(match.group(1) if match else "")
-
-    if not candidate:
-        plain = _strip_html_to_readable_text(raw)
-        fallback = re.search(r"(?is)\bConclusion\b\s*[:\-]?\s*(.{30,1400}?)(?:\bRecommendation\b|$)", plain)
-        candidate = str(fallback.group(1) if fallback else "").strip()
-
-    candidate = re.sub(r"\bR\d{3}\b\s*[-:]?\s*", "", str(candidate or ""), flags=re.IGNORECASE)
-    candidate = re.sub(r"\s+", " ", candidate).strip()
-    if len(candidate) < 20:
-        return None
-    if len(candidate) > 3800:
-        candidate = candidate[:3800].rstrip()
-    return candidate or None
+    return extract_auditor_learning_from_report_html(report_html)
 
 def _normalize_label_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
@@ -410,173 +356,8 @@ def _build_rule_based_conclusion_from_report(report_html: str, checklist_payload
     if not conclusion:
         conclusion = "Patient with available clinical complaints and diagnosis was reviewed. Reason for query: clinical evidence is incomplete for final admissibility decision."
     return conclusion, triggered_count
-_ALLOWED_CONCLUSION_ENDINGS = {
-    "Therefore, the claim is admissible.",
-    "Therefore, the claim is recommended for rejection.",
-    "Therefore, the claim is kept under query.",
-}
-
-
-def _extract_openai_response_text_for_claims(body: dict) -> str:
-    if not isinstance(body, dict):
-        return ""
-    choices = body.get("choices") if isinstance(body.get("choices"), list) else []
-    first = choices[0] if choices else {}
-    message = first.get("message") if isinstance(first, dict) else {}
-    content = message.get("content") if isinstance(message, dict) else ""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        out: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                val = item.get("text") or item.get("content")
-                if isinstance(val, str) and val.strip():
-                    out.append(val.strip())
-        return "\n".join(out).strip()
-    return ""
-
-
-def _verdict_sentence_from_recommendation(recommendation: str) -> str:
-    rec = str(recommendation or "").strip().lower()
-    if rec in {"approve", "approved", "admissible", "payable"}:
-        return "Therefore, the claim is admissible."
-    if rec in {"reject", "rejected", "inadmissible"}:
-        return "Therefore, the claim is recommended for rejection."
-    return "Therefore, the claim is kept under query."
-
-
-def _normalize_ai_conclusion_paragraph(value: str, recommendation: str) -> str:
-    text_value = str(value or "").strip()
-    if not text_value:
-        return ""
-    text_value = re.sub(r"^```(?:text|markdown)?\s*", "", text_value, flags=re.I)
-    text_value = re.sub(r"\s*```$", "", text_value).strip()
-    text_value = re.sub(r"<[^>]+>", " ", text_value)
-    text_value = re.sub(r"\s+", " ", text_value).strip()
-    text_value = text_value.strip('"\'` ')
-
-    for ending in _ALLOWED_CONCLUSION_ENDINGS:
-        if text_value.endswith(ending):
-            return text_value
-
-    verdict = _verdict_sentence_from_recommendation(recommendation)
-    text_value = text_value.rstrip(" .") + ". " + verdict
-    return re.sub(r"\s+", " ", text_value).strip()
-
-
 def _generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: dict, recommendation: str) -> str:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY not configured")
-
-    report_text = _strip_html_to_readable_text(report_html)
-    if not report_text:
-        raise RuntimeError("report text is empty")
-    if len(report_text) > 50000:
-        report_text = report_text[:50000]
-
-    checklist_rows = checklist_payload.get("checklist") if isinstance(checklist_payload.get("checklist"), list) else []
-    triggered_codes: list[str] = []
-    seen_codes: set[str] = set()
-    for entry in checklist_rows:
-        if not isinstance(entry, dict):
-            continue
-        if not bool(entry.get("triggered")):
-            continue
-        if not _is_checklist_rule_source(str(entry.get("source") or "")):
-            continue
-        code = _extract_rule_code_from_entry(entry)
-        if not code or code in seen_codes:
-            continue
-        seen_codes.add(code)
-        triggered_codes.append(code)
-
-    trigger_hint = ", ".join(triggered_codes) if triggered_codes else "No explicit triggered rule code in latest checklist payload"
-
-    rules_text = (
-        "R001 - Meropenem/high-end antibiotic without sepsis markers\n"
-        "R002 - ORIF billed without displaced/unstable fracture indication\n"
-        "R003 - Pneumonia imaging negative + no culture + high-end antibiotic\n"
-        "R004 - UTI without urine culture/sensitivity correlation\n"
-        "R005 - Sepsis diagnosis must have markers and culture/work-up\n"
-        "R006 - High-end antibiotic not supported by vitals/objective evidence\n"
-        "R007 - Ayurvedic hospital accreditation/registration missing\n"
-        "R008 - Alcoholism history with CLD context\n"
-        "R009 - Hairline fracture in surgical fixation claim\n"
-        "R010 - Stable/undisplaced fracture without ORIF/K-wire indication\n"
-        "R011 - Fracture case missing X-ray evidence and billing support\n"
-        "R013 - UTI + Meropenem supported by culture sensitivity evidence\n"
-        "R014 - Low bill but admission justified override\n"
-        "R015 - Maternity/LSCS/neonatal override\n"
-        "R016 - Sepsis requires combined evidence of vitals, markers, and culture"
-    )
-
-    user_prompt = (
-        "You are a senior medical claim investigator and audit specialist with expertise in insurance claim adjudication, clinical documentation review, medical necessity assessment, and medico-legal audit writing.\n\n"
-        "Your task is to review the Health Claim Investigation Report provided below and generate a single professional conclusion paragraph suitable for TPA/insurance audit use.\n\n"
-        "REVIEW OBJECTIVES:\n"
-        "1. Examine the full report clinically, logically, and documentarily.\n"
-        "2. Apply all relevant rules from R001 to R016.\n"
-        "3. Determine whether diagnosis, investigations, treatment, admission, and billing are mutually consistent.\n"
-        "4. Identify contradictions, unsupported treatment, missing evidence, weak justification, or incorrect reasoning.\n"
-        "5. Assess whether the existing report conclusion is supported by available records.\n"
-        "6. Produce a final medico-legal conclusion in one paragraph only.\n"
-        "7. For rejection/query outcomes, clearly include the culprit medicine(s) and investigation basis for rejection.\n\n"
-        "RULES TO BE APPLIED:\n"
-        + rules_text
-        + "\n\nSTRICT INSTRUCTIONS:\n"
-        "1. Apply every relevant rule; multiple rules may be triggered.\n"
-        "2. Do not mention internal category labels.\n"
-        "3. Cross-check diagnosis vs findings/investigations, treatment vs severity, antibiotic/procedure support, LOS necessity, and billing intensity.\n"
-        "4. If report conclusion is unsupported, explicitly state it is not consistent with available records.\n"
-        "5. Maintain formal, objective, concise medico-legal language.\n"
-        "6. No bullets, headings, or labels in output.\n"
-        "7. Output must be exactly one paragraph.\n"
-        "8. Last sentence must be exactly one of: Therefore, the claim is admissible. OR Therefore, the claim is recommended for rejection. OR Therefore, the claim is kept under query.\n"
-        "9. If recommendation is rejection or query, explicitly name the culprit medicine(s) (for example Meropenem/high-end antibiotic when applicable) and state the investigation basis (missing/contradictory labs, cultures, imaging, vitals, or other objective findings) in the same paragraph.\n"
-        "10. Keep the conclusion detailed but still a single paragraph with no extra sections.\n\n"
-        "TRIGGERED RULE HINTS FROM ENGINE: "
-        + trigger_hint
-        + "\n\nHEALTH CLAIM INVESTIGATION REPORT:\n"
-        + report_text
-    )
-
-    base_url = settings.openai_base_url.rstrip("/") if settings.openai_base_url else "https://api.openai.com/v1"
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    candidates: list[str] = []
-    for item in [settings.openai_rag_model, settings.openai_model, "gpt-4.1-mini", "gpt-4o-mini"]:
-        model = str(item or "").strip()
-        if model and model not in candidates:
-            candidates.append(model)
-
-    errors: list[str] = []
-    for model in candidates:
-        request_payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a medico-legal claim audit writer. Return exactly one paragraph only."},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-        }
-        try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(url, headers=headers, json=request_payload)
-                response.raise_for_status()
-            raw = _extract_openai_response_text_for_claims(response.json())
-            normalized = _normalize_ai_conclusion_paragraph(raw, recommendation)
-            if normalized:
-                return normalized
-            errors.append(f"{model}: empty_output")
-        except Exception as exc:
-            errors.append(f"{model}: {exc}")
-
-    raise RuntimeError(f"ai conclusion generation failed: {errors[:3] or ['unknown']}")
+    return generate_ai_medico_legal_conclusion(report_html, checklist_payload, recommendation)
 
 @router.post("", response_model=ClaimResponse, status_code=status.HTTP_201_CREATED)
 def create_claim_endpoint(
@@ -706,182 +487,21 @@ def save_claim_report_html_endpoint(
     created_by = actor_id
     if report_source == "system":
         created_by = actor_id if actor_id.lower().startswith("system:") else f"system:{actor_id}"
-
-    decision_row = db.execute(
-        text(
-            """
-            SELECT id, recommendation
-            FROM decision_results
-            WHERE claim_id = :claim_id
-            ORDER BY generated_at DESC
-            LIMIT 1
-            """
-        ),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
-    decision_id = decision_row.get("id") if decision_row else None
-    decision_recommendation = str(decision_row.get("recommendation") or "") if decision_row else ""
-
-    version_no = int(
-        db.execute(
-            text("SELECT COALESCE(MAX(version_no), 0) + 1 FROM report_versions WHERE claim_id = :claim_id"),
-            {"claim_id": str(claim_id)},
-        ).scalar_one()
-        or 1
-    )
-
-    row = db.execute(
-        text(
-            """
-            INSERT INTO report_versions (
-                claim_id,
-                decision_id,
-                version_no,
-                report_status,
-                report_markdown,
-                export_uri,
-                created_by
-            )
-            VALUES (
-                :claim_id,
-                :decision_id,
-                :version_no,
-                :report_status,
-                :report_markdown,
-                '',
-                :created_by
-            )
-            RETURNING id, claim_id, decision_id, version_no, report_status, created_by, created_at
-            """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "decision_id": str(decision_id) if decision_id else None,
-            "version_no": version_no,
-            "report_status": report_status,
-            "report_markdown": report_html,
-            "created_by": created_by,
-        },
-    ).mappings().one()
-
-    db.execute(
-        text(
-            """
-            INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload)
-            VALUES (:claim_id, 'user', :actor_id, 'report_saved_html', CAST(:event_payload AS jsonb))
-            """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "actor_id": actor_id,
-            "event_payload": json.dumps({"version_no": version_no, "report_status": report_status, "report_source": report_source}),
-        },
-    )
-
-    feedback_label_value = _extract_feedback_label_from_report_html(report_html)
-    if not feedback_label_value:
-        feedback_label_value = _feedback_label_from_decision_recommendation(decision_recommendation)
-    if report_source == "doctor" and feedback_label_value:
-        db.execute(
-            text(
-                """
-                DELETE FROM feedback_labels
-                WHERE claim_id = :claim_id AND label_type = 'doctor_report_outcome'
-                """
-            ),
-            {"claim_id": str(claim_id)},
+    try:
+        return save_claim_report_html(
+            db,
+            claim_id=claim_id,
+            report_html=report_html,
+            report_status=report_status,
+            report_source=report_source,
+            actor_id=actor_id,
+            report_created_by=created_by,
+            label_created_by=current_user.username,
+            is_auditor=current_user.role == UserRole.auditor,
         )
-        db.execute(
-            text(
-                """
-                INSERT INTO feedback_labels (
-                    claim_id,
-                    decision_id,
-                    label_type,
-                    label_value,
-                    override_reason,
-                    notes,
-                    created_by
-                )
-                VALUES (
-                    :claim_id,
-                    :decision_id,
-                    'doctor_report_outcome',
-                    :label_value,
-                    'doctor_report_saved_html',
-                    :notes,
-                    :created_by
-                )
-                """
-            ),
-            {
-                "claim_id": str(claim_id),
-                "decision_id": str(row.get("decision_id") or "") or None,
-                "label_value": feedback_label_value,
-                "notes": f"Auto label from doctor report HTML (version {version_no}, status={report_status}).",
-                "created_by": current_user.username,
-            },
-        )
-
-
-    if current_user.role == UserRole.auditor and report_source == "doctor":
-        auditor_learning = _extract_auditor_learning_from_report_html(report_html)
-        db.execute(
-            text(
-                """
-                DELETE FROM feedback_labels
-                WHERE claim_id = :claim_id AND label_type = 'auditor_report_learning'
-                """
-            ),
-            {"claim_id": str(claim_id)},
-        )
-        if auditor_learning:
-            auditor_learning_label = feedback_label_value or _feedback_label_from_decision_recommendation(decision_recommendation) or "manual_review"
-            db.execute(
-                text(
-                    """
-                    INSERT INTO feedback_labels (
-                        claim_id,
-                        decision_id,
-                        label_type,
-                        label_value,
-                        override_reason,
-                        notes,
-                        created_by
-                    )
-                    VALUES (
-                        :claim_id,
-                        :decision_id,
-                        'auditor_report_learning',
-                        :label_value,
-                        'auditor_report_saved_html',
-                        :notes,
-                        :created_by
-                    )
-                    """
-                ),
-                {
-                    "claim_id": str(claim_id),
-                    "decision_id": str(row.get("decision_id") or "") or None,
-                    "label_value": auditor_learning_label,
-                    "notes": auditor_learning,
-                    "created_by": current_user.username,
-                },
-            )
-
-    db.commit()
-
-    return ClaimReportSaveResponse(
-        id=row["id"],
-        claim_id=row["claim_id"],
-        decision_id=row.get("decision_id"),
-        version_no=int(row["version_no"]),
-        report_status=str(row["report_status"]),
-        report_source=report_source,
-        created_by=str(row["created_by"]),
-        created_at=row["created_at"],
-        html_size=len(report_html),
-    )
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"failed to save report: {exc}") from exc
 
 
 
@@ -922,29 +542,17 @@ def grammar_check_claim_report_endpoint(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"grammar check failed: {exc}") from exc
 
-    try:
-        db.execute(
-            text(
-                """
-                INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload)
-                VALUES (:claim_id, 'user', :actor_id, 'report_grammar_checked', CAST(:event_payload AS jsonb))
-                """
-            ),
-            {
-                "claim_id": str(claim_id),
-                "actor_id": actor_id,
-                "event_payload": json.dumps(
-                    {
-                        "checked_segments": int(result.get("checked_segments") or 0),
-                        "corrected_segments": int(result.get("corrected_segments") or 0),
-                        "model": str(result.get("model") or ""),
-                    }
-                ),
-            },
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
+    try_record_workflow_event(
+        db,
+        claim_id=claim_id,
+        actor_id=actor_id,
+        event_type="report_grammar_checked",
+        payload={
+            "checked_segments": int(result.get("checked_segments") or 0),
+            "corrected_segments": int(result.get("corrected_segments") or 0),
+            "model": str(result.get("model") or ""),
+        },
+    )
 
     return ClaimReportGrammarCheckResponse(
         corrected_html=str(result.get("corrected_html") or report_html),
@@ -1015,32 +623,20 @@ def generate_claim_conclusion_only_endpoint(
         except Exception:
             source_label = "rule_engine"
 
-    try:
-        db.execute(
-            text(
-                """
-                INSERT INTO workflow_events (claim_id, actor_type, actor_id, event_type, event_payload)
-                VALUES (:claim_id, 'user', :actor_id, 'report_conclusion_generated', CAST(:event_payload AS jsonb))
-                """
-            ),
-            {
-                "claim_id": str(claim_id),
-                "actor_id": actor_id,
-                "event_payload": json.dumps(
-                    {
-                        "triggered_rules_count": int(triggered_count),
-                        "recommendation": recommendation,
-                        "rerun_rules": bool(payload.rerun_rules),
-                        "force_source_refresh": bool(payload.force_source_refresh),
-                        "use_ai": bool(payload.use_ai),
-                        "source": source_label,
-                    }
-                ),
-            },
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
+    try_record_workflow_event(
+        db,
+        claim_id=claim_id,
+        actor_id=actor_id,
+        event_type="report_conclusion_generated",
+        payload={
+            "triggered_rules_count": int(triggered_count),
+            "recommendation": recommendation,
+            "rerun_rules": bool(payload.rerun_rules),
+            "force_source_refresh": bool(payload.force_source_refresh),
+            "use_ai": bool(payload.use_ai),
+            "source": source_label,
+        },
+    )
 
     return ClaimConclusionGenerateResponse(
         claim_id=claim_id,
@@ -1117,13 +713,6 @@ def get_claim_structured_data_endpoint(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"structured data generation failed: {exc}") from exc
-
-
-
-
-
-
-
 
 
 

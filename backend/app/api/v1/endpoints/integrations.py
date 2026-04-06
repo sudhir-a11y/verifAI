@@ -9,6 +9,16 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_db
+from app.repositories import (
+    claim_documents_repo,
+    claim_legacy_data_repo,
+    claim_report_uploads_repo,
+    claims_repo,
+    decision_results_repo,
+    document_extractions_repo,
+    feedback_labels_repo,
+    report_versions_repo,
+)
 from app.schemas.integration import TeamRightWorksCaseIntakeRequest, TeamRightWorksCaseIntakeResponse
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -26,48 +36,16 @@ _ALLOWED_LABELS = {"approve", "reject", "need_more_evidence", "manual_review"}
 
 
 def _ensure_claim_legacy_data_table(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS claim_legacy_data (
-                id BIGSERIAL PRIMARY KEY,
-                claim_id UUID NOT NULL UNIQUE REFERENCES claims(id) ON DELETE CASCADE,
-                legacy_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-    )
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_claim_legacy_data_claim_id ON claim_legacy_data(claim_id)"))
+    claim_legacy_data_repo.ensure_claim_legacy_data_table(db)
 
 
 def _ensure_claim_report_uploads_table(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS claim_report_uploads (
-                id BIGSERIAL PRIMARY KEY,
-                claim_id UUID NOT NULL UNIQUE REFERENCES claims(id) ON DELETE CASCADE,
-                report_export_status VARCHAR(30) NOT NULL DEFAULT 'pending',
-                tagging VARCHAR(120),
-                subtagging VARCHAR(120),
-                opinion TEXT,
-                qc_status VARCHAR(10) NOT NULL DEFAULT 'no',
-                updated_by VARCHAR(100),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-    )
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_claim_report_uploads_claim_id ON claim_report_uploads(claim_id)"))
+    claim_report_uploads_repo.ensure_claim_report_uploads_table(db)
 
 
 
 def _ensure_claim_completed_at_column(db: Session) -> None:
-    db.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_claims_completed_at ON claims(completed_at)"))
+    claims_repo.ensure_claim_completed_at_column(db)
 def _extract_auth_token(authorization: str | None, x_integration_token: str | None) -> str:
     header_token = (x_integration_token or "").strip()
     if header_token:
@@ -218,35 +196,12 @@ def _strip_html_to_text(value: Any) -> str:
 
 
 def _clear_claim_generated_data(db: Session, claim_id: str) -> dict[str, int]:
-    report_versions_deleted = int(
-        db.execute(text("DELETE FROM report_versions WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-    )
-    claim_report_uploads_deleted = int(
-        db.execute(text("DELETE FROM claim_report_uploads WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-    )
-    feedback_labels_deleted = int(
-        db.execute(text("DELETE FROM feedback_labels WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-    )
-    decision_results_deleted = int(
-        db.execute(text("DELETE FROM decision_results WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-    )
-    document_extractions_deleted = int(
-        db.execute(text("DELETE FROM document_extractions WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
-    )
-    documents_reset = int(
-        db.execute(
-            text(
-                """
-                UPDATE claim_documents
-                SET parse_status = 'pending',
-                    parsed_at = NULL
-                WHERE claim_id = :claim_id
-                """
-            ),
-            {"claim_id": claim_id},
-        ).rowcount
-        or 0
-    )
+    report_versions_deleted = report_versions_repo.delete_by_claim_id(db, claim_id=claim_id)
+    claim_report_uploads_deleted = claim_report_uploads_repo.delete_by_claim_id(db, claim_id=claim_id)
+    feedback_labels_deleted = feedback_labels_repo.delete_by_claim_id(db, claim_id=claim_id)
+    decision_results_deleted = decision_results_repo.delete_by_claim_id(db, claim_id=claim_id)
+    document_extractions_deleted = document_extractions_repo.delete_by_claim_id(db, claim_id=claim_id)
+    documents_reset = claim_documents_repo.reset_parse_status(db, claim_id=claim_id)
     return {
         "report_versions_deleted": report_versions_deleted,
         "claim_report_uploads_deleted": claim_report_uploads_deleted,
@@ -754,4 +709,3 @@ def teamrightworks_case_intake(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"teamrightworks intake failed: {exc}") from exc
-
