@@ -7,6 +7,7 @@ def decide_final(
     *,
     checklist_result: dict[str, Any] | None,
     doctor_verification: dict[str, Any] | None,
+    registry_verifications: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Combine checklist + doctor verification into a final decision.
@@ -17,6 +18,7 @@ def decide_final(
     doctor = doctor_verification if isinstance(doctor_verification, dict) else None
     checklist = checklist_result if isinstance(checklist_result, dict) else {}
     checklist_conf = float(checklist.get("confidence", 0.5))
+    verifications = registry_verifications if isinstance(registry_verifications, dict) else {}
 
     if doctor:
         decision = _normalize_final_status(doctor.get("doctor_decision"))
@@ -32,12 +34,44 @@ def decide_final(
     raw = checklist.get("recommendation")
     decision = _normalize_checklist_to_final_status(raw)
     reason = _checklist_reason(checklist)
+
+    invalid_labels: list[str] = []
+    for key, label in (
+        ("doctor_valid", "doctor"),
+        ("hospital_gst_valid", "hospital_gst"),
+        ("pharmacy_gst_valid", "pharmacy_gst"),
+        # legacy
+        ("gst_valid", "gst"),
+        ("drug_license_valid", "drug_license"),
+    ):
+        v = verifications.get(key)
+        if v is False:
+            invalid_labels.append(label)
+
+    if invalid_labels:
+        hospital_bad = verifications.get("hospital_gst_valid") is False
+        pharmacy_bad = verifications.get("pharmacy_gst_valid") is False or verifications.get("gst_valid") is False
+
+        # Risk logic:
+        # - Hospital GST invalid => high risk (downgrade approve->query; keep reject)
+        # - Pharmacy GST invalid => medium risk (downgrade approve->query)
+        # - Both invalid => reject
+        if hospital_bad and pharmacy_bad:
+            decision = "reject"
+        elif (hospital_bad or pharmacy_bad) and decision == "approve":
+            decision = "query"
+
+        suffix = "registry invalid: " + ", ".join(invalid_labels)
+        reason = (reason + " | " + suffix).strip(" |") if reason else suffix
+
     # AI-only decision: scale confidence based on checklist quality
     conf = checklist_conf * 0.85 if checklist_conf > 0 else 0.3
+    if invalid_labels:
+        conf = max(0.05, conf * 0.75)
     return {
         "final_status": decision,
         "reason": reason,
-        "source": "checklist",
+        "source": "checklist+registry" if invalid_labels else "checklist",
         "confidence": round(conf, 4),
     }
 
@@ -103,4 +137,3 @@ def final_status_to_decision_recommendation(final_status: str) -> str:
 
 
 __all__ = ["decide_final", "final_status_to_decision_recommendation"]
-

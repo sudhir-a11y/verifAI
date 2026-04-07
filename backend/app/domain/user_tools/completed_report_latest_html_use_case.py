@@ -49,10 +49,11 @@ def get_completed_report_latest_html(
     if normalized_source not in {"any", "doctor", "system"}:
         raise InvalidSourceError("invalid source. allowed: any, doctor, system")
 
-    assigned_doctor_id = claims_repo.get_claim_assigned_doctor_id(db, claim_id=claim_id)
-    if assigned_doctor_id is None:
+    claim_row = claims_repo.get_claim_by_id(db, claim_id)
+    if claim_row is None:
         raise ClaimNotFoundError("claim not found")
 
+    assigned_doctor_id = claim_row.get("assigned_doctor_id")
     if current_user_role == UserRole.doctor and not doctor_matches_assignment(
         str(assigned_doctor_id or ""),
         current_username,
@@ -69,12 +70,20 @@ def get_completed_report_latest_html(
         row = _fetch_latest_html_row(db, claim_id=claim_id, source="any")
 
     if row is None:
-        detail = (
-            "No saved report HTML found for this claim and source."
-            if normalized_source != "any"
-            else "No saved report HTML found for this claim."
+        # UX: treat "no report yet" as a valid empty response so the UI can
+        # render an editable canvas without spamming 404s.
+        external_claim_id = str(claim_row.get("external_claim_id") or "")
+        report_source = normalized_source if normalized_source in {"doctor", "system"} else "doctor"
+        return CompletedReportLatestHtmlResponse(
+            claim_id=str(claim_id),
+            external_claim_id=external_claim_id,
+            version_no=0,
+            report_html="",
+            report_status="draft",
+            report_source=report_source,
+            created_by="",
+            created_at="",
         )
-        raise ReportNotFoundError(detail)
 
     return CompletedReportLatestHtmlResponse(
         claim_id=str(row.get("claim_id") or claim_id),
@@ -95,4 +104,3 @@ __all__ = [
     "ReportNotFoundError",
     "get_completed_report_latest_html",
 ]
-

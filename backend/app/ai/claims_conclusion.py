@@ -38,12 +38,22 @@ def _normalize_ai_conclusion_paragraph(value: str, recommendation: str) -> str:
     text_value = re.sub(r"\s+", " ", text_value).strip()
     text_value = text_value.strip('"\'` ')
 
-    for ending in _ALLOWED_CONCLUSION_ENDINGS:
-        if text_value.endswith(ending):
-            return text_value
-
+    # Always enforce the verdict sentence to match the pipeline recommendation,
+    # even if the model produced a different allowed ending (prevents
+    # "reject reasoning" + "admissible" contradictions).
     verdict = _verdict_sentence_from_recommendation(recommendation)
-    text_value = text_value.rstrip(" .") + ". " + verdict
+
+    # Strip any existing verdict sentences (models sometimes include multiple).
+    for ending in _ALLOWED_CONCLUSION_ENDINGS:
+        text_value = text_value.replace(ending, "").strip()
+
+    # Ensure exactly one verdict at the end.
+    text_value = text_value.rstrip(" .")
+    if text_value:
+        text_value = text_value + ". " + verdict
+    else:
+        text_value = verdict
+
     return re.sub(r"\s+", " ", text_value).strip()
 
 
@@ -152,4 +162,3 @@ def generate_ai_medico_legal_conclusion(report_html: str, checklist_payload: dic
             errors.append(f"{model}: {exc}")
 
     raise RuntimeError(f"ai conclusion generation failed: {errors[:3] or ['unknown']}")
-

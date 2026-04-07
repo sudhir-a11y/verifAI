@@ -235,6 +235,32 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DRUG_LOOKUP_API_URL"),
     )
 
+    # APISetu GST (Taxpayer API) integration
+    apisetu_gst_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("APISETU_GST_ENABLED"),
+    )
+    apisetu_gst_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("APISETU_GST_BASE_URL"),
+    )
+    apisetu_gst_taxpayer_url_template: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("APISETU_GST_TAXPAYER_URL_TEMPLATE"),
+    )
+    apisetu_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("APISETU_API_KEY"),
+    )
+    apisetu_api_key_header: str = Field(
+        default="x-api-key",
+        validation_alias=AliasChoices("APISETU_API_KEY_HEADER"),
+    )
+    apisetu_gst_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices("APISETU_GST_TIMEOUT_SECONDS"),
+    )
+
     @field_validator("s3_region", mode="before")
     @classmethod
     def _validate_s3_region(cls, value: str | None):

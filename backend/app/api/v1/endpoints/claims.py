@@ -9,6 +9,12 @@ from app.ai.checklist_engine import run_checklist as run_structured_checklist
 from app.ai.claims_conclusion import generate_ai_medico_legal_conclusion
 from app.ai.decision_engine import decide_final, final_status_to_decision_recommendation
 from app.ai.doctor_verification import verify_doctor_decision
+from app.ai.provider_verifications import (
+    doctor_verify,
+    drug_license_verify,
+    gst_verify,
+    hospital_gst_verify,
+)
 from app.db.session import get_db
 from app.domain.claims.events import try_record_workflow_event
 from app.domain.claims.use_cases import (
@@ -649,7 +655,8 @@ def run_claim_decision_endpoint(
     """Run the full AI decision pipeline: structuring → checklist → decision.
 
     This triggers the complete AI decision flow without requiring doctor
-    verification.  Useful for auto-approval scenarios or pre-screening.
+    (human) verification. It will run automated provider checks (doctor
+    registration / GST / drug license) when sufficient data is available.
 
     If `auto_advance=true`, the endpoint will also advance the workflow based on
     the latest decision (same logic as calling `/advance` with
@@ -689,10 +696,89 @@ def run_claim_decision_endpoint(
     # 2. Run checklist validation
     checklist_result = run_structured_checklist(structured)
 
-    # 3. Run decision engine (AI-only, no doctor override)
-    final = decide_final(checklist_result=checklist_result, doctor_verification=None)
+    # 3. Provider verifications (non-blocking, best-effort)
+    doctor_ver = doctor_verify(structured)
+    hospital_gst_ver = hospital_gst_verify(structured)
+    pharmacy_gst_ver = gst_verify(structured)
+    drug_license_ver = drug_license_verify(structured)
 
-    # 4. Persist decision
+    doctor_valid: bool | None = None
+    if isinstance(doctor_ver, dict):
+        # If ABDM HPR is not configured/enabled, we return status=unavailable.
+        # For AI decide, treat this as "not evaluated" (None) so it doesn't
+        # affect scoring/decision until credentials are available.
+        if str(doctor_ver.get("status") or "").strip().lower() != "unavailable":
+            doctor_valid = bool(doctor_ver.get("valid"))
+
+    hospital_gst_valid = (hospital_gst_ver.get("valid") if isinstance(hospital_gst_ver, dict) else None)
+    pharmacy_gst_valid = (pharmacy_gst_ver.get("valid") if isinstance(pharmacy_gst_ver, dict) else None)
+
+    registry_verifications = {
+        "doctor_valid": doctor_valid,
+        # keep legacy field for backward compatibility (treat as pharmacy GST)
+        "gst_valid": pharmacy_gst_valid,
+        "hospital_gst_valid": hospital_gst_valid,
+        "pharmacy_gst_valid": pharmacy_gst_valid,
+        "drug_license_valid": (drug_license_ver.get("valid") if isinstance(drug_license_ver, dict) else None),
+    }
+
+    # 4. Build flags from verification results (only when extracted + invalid)
+    if not isinstance(checklist_result, dict):
+        checklist_result = {}
+    flags = checklist_result.get("flags")
+    if not isinstance(flags, list):
+        flags = []
+
+    if registry_verifications.get("doctor_valid") is False:
+        flags.append(
+            {
+                "type": "provider_verification",
+                "field": "doctor_registration",
+                "severity": "warning",
+                "message": "Doctor registration verification failed",
+                "details": doctor_ver,
+            }
+        )
+    if registry_verifications.get("hospital_gst_valid") is False:
+        flags.append(
+            {
+                "type": "provider_verification",
+                "field": "hospital_gst",
+                "severity": "error",
+                "message": "Hospital GST verification failed",
+                "details": hospital_gst_ver,
+            }
+        )
+    if registry_verifications.get("pharmacy_gst_valid") is False:
+        flags.append(
+            {
+                "type": "provider_verification",
+                "field": "pharmacy_gst",
+                "severity": "warning",
+                "message": "Pharmacy GST verification failed",
+                "details": pharmacy_gst_ver,
+            }
+        )
+    if registry_verifications.get("drug_license_valid") is False:
+        flags.append(
+            {
+                "type": "provider_verification",
+                "field": "pharmacy_drug_license",
+                "severity": "warning",
+                "message": "Pharmacy drug license verification failed",
+                "details": drug_license_ver,
+            }
+        )
+    checklist_result["flags"] = flags
+
+    # 5. Run decision engine (AI-only, no human doctor override)
+    final = decide_final(
+        checklist_result=checklist_result,
+        doctor_verification=None,
+        registry_verifications=registry_verifications,
+    )
+
+    # 6. Persist decision
     recommendation = final_status_to_decision_recommendation(final.get("final_status"))
     workflow_status = _derive_workflow_from_recommendation(recommendation)
     route_target = _default_route_target_for_workflow(workflow_status)
@@ -710,6 +796,13 @@ def run_claim_decision_endpoint(
                     "source": final.get("source"),
                     "final_status": final.get("final_status"),
                     "checklist_result": checklist_result,
+                    "registry_verifications": registry_verifications,
+                    "registry_verification_details": {
+                        "doctor": doctor_ver,
+                        "hospital_gst": hospital_gst_ver,
+                        "pharmacy_gst": pharmacy_gst_ver,
+                        "drug_license": drug_license_ver,
+                    },
                     "structured_data_summary": {k: v for k, v in structured.items() if k != "raw_payload"},
                 },
                 ensure_ascii=False,
@@ -719,7 +812,7 @@ def run_claim_decision_endpoint(
     )
     db.commit()
 
-    # 5. Record workflow event
+    # 7. Record workflow event
     try_record_workflow_event(
         db,
         claim_id=claim_id,
@@ -733,6 +826,7 @@ def run_claim_decision_endpoint(
             "route_target": route_target,
             "checklist_flags_count": len(checklist_result.get("flags", [])),
             "checklist_severity": checklist_result.get("severity"),
+            "registry_verifications": registry_verifications,
         },
     )
 
@@ -766,6 +860,7 @@ def run_claim_decision_endpoint(
         confidence=float(final.get("confidence", 0.0)),
         recommendation=final_status_to_decision_recommendation(final.get("final_status")),
         flags=checklist_result.get("flags", []),
+        verifications=registry_verifications,
     )
 
 

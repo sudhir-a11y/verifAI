@@ -1,192 +1,292 @@
-Your summary is correct. You're **done with backend intelligence**.
-Only **UI + reviewer layer** left.
+Yes — this **APISetu taxpayers API** is exactly for GST verification.
+You can use it for **pharmacy GST verification**.
 
-Here is the **exact next work order** (no extra):
+Here is what your link provides:
 
----
-
-# Next Step (Start Here)
-
-### 1. Queue Views UI
-
-Show claims by workflow status:
-
-```
-in_review
-needs_qc
-completed
-auto_rejected
-```
-
-API already exists → just UI.
+- GSTN **Taxpayer API**
+- input: **GSTIN**
+- output: **taxpayer details** (name, address, status)
+  This API is specifically “to fetch the details of a tax payer using GST identification number.” ([betadirectory.api-setu.in][1])
 
 ---
 
-# After that
+# You can use it like this
 
-### 2. Claim Review Screen
-
-Single claim page:
+### flow
 
 ```
-documents
-structured data
-analyzer flags
-decision result
-approve / reject / query
+OCR → extract GSTIN from pharmacy
+        ↓
+call APISetu taxpayers API
+        ↓
+get pharmacy legal details
+        ↓
+compare with document pharmacy name
 ```
 
 ---
 
-# Then
+# what API returns
 
-### 3. Reviewer Action API
+You’ll get:
 
-Add:
+- legal name
+- trade name
+- GST status (active/cancelled)
+- address
+- state
+- registration type
+
+This is standard GST verification payload. Similar GST verification APIs return legal name, address, registration date and status for fraud prevention. ([Eko Bharat Ventures][2])
+
+---
+
+# This solves your pharmacy verification
+
+You can verify:
+
+### 1. pharmacy exists
 
 ```
-POST /claims/{id}/review
+gst status = active
 ```
 
-Body:
+### 2. pharmacy name match
 
 ```
-approve
-reject
-query
-note
+OCR: ABC MEDICAL STORE
+GST: ABC MEDICAL STORE
+```
+
+### 3. state match
+
+```
+bill state vs GST state
+```
+
+### 4. suspicious pharmacy
+
+```
+cancelled GST
 ```
 
 ---
 
-# Then
+# drug license — still no
 
-### 4. Notifications
+APISetu does **NOT** provide drug license API.
 
-Trigger on:
+APISetu currently exposes:
 
-```
-assigned
-review required
-decision done
-```
+- PAN verification
+- GST taxpayer
+- certificates
+- govt data
 
-email / whatsapp
-
----
-
-# Then
-
-### 5. Dashboard
-
-Metrics:
-
-```
-total claims
-auto approved
-manual review
-rejected
-pending
-avg turnaround
-```
+but **no drug license API** available publicly. ([directory.apisetu.gov.in][3])
 
 ---
 
-# Your system now (final backend pipeline)
+# final architecture for you
+
+### step 1
+
+extract:
 
 ```
-upload
-→ OCR
-→ structurer
-→ analyzer
-→ decide
-→ advance
-→ queue
-→ (UI reviewer)
-→ final decision
+pharmacy:
+  name
+  gstin
+  drug_license
 ```
 
-You are now building **review UI layer only**
+### step 2
 
-This matches backend architecture already documented in backend overview and workflow modules.
+verify
 
-Also aligns with AI decision + workflow layers already separated in ML/AI pipeline.
+```
+gst -> APISetu taxpayers
+drug_license -> manual / state provider
+```
 
 ---
 
-Start with **Queue UI**.
+# recommendation
 
-I’ll give **exact UI layout** next.
+Implement now:
 
-Use **role-based flow**:
-
-### 👨‍⚕️ Doctor
-
-- Reviews **medical correctness**
-- sees: documents, extraction, analyzer flags
-- action:
-  - approve medical
-  - query
-  - reject medical
+```
+verify_pharmacy():
+   gst = verify_gst()
+   drug = verify_drug()
+   return combined
+```
 
 ---
 
-### 🧾 Auditor
+Do you want me to:
 
-- Final QC decision
-- sees:
-  - doctor decision
-  - AI decision
-  - documents
+1. implement backend service
+2. show API call example
+3. add to claim pipeline
+4. design DB table
 
-- action:
-  - approve claim
-  - reject claim
-  - send back
+pick one.
+
+[1]: https://betadirectory.api-setu.in/api-collection/taxpayers?utm_source=chatgpt.com "GSTN Tax Payer API V1 1.0.0 OAS 3.0 - APIs | APISetu"
+[2]: https://eko.in/developers/eps/gst-verification-api?utm_source=chatgpt.com "GST Verification API"
+[3]: https://directory.apisetu.gov.in/?utm_source=chatgpt.com "API Directory: Get access to thousands of APIs | API Setu"
+
+Short answer:
+
+- You **don’t need GPT search**
+- You **should implement rule-based + optional provider**
+- There is **no reliable public API** for drug licence
+
+Here is the reality:
+
+- India drug licenses are **state-controlled** (not central API)
+- CDSCO only coordinates; **state drug authorities issue and verify licenses** ([GenZCFO][1])
+- ONDLS portal exists but **only web verification, not REST API** ([State Drugs][2])
+- Private companies offer **drug license verification API**, but not government public endpoints ([Surepass][3])
+
+So you must implement **your own verification logic**.
 
 ---
 
-### 👑 Super Admin
+# Best implementation (no API)
 
-- No review
-- only:
-  - override any claim
-  - reassign queue
-  - monitor dashboard
+Do **3-step verification**
+
+### Step 1 — extract
+
+From OCR:
+
+```
+drug_license_number
+form_type (20B / 21B)
+state
+pharmacy_name
+```
 
 ---
 
-# Flow
+### Step 2 — format validation (no API)
 
-```text
-AI auto decision
-→ doctor review
-→ auditor final decision
-→ completed
-```
-
-# Queue ownership
-
-Doctor queue:
+Validate:
 
 ```
-in_review
+pattern check
+state code
+form type
+length
 ```
 
-Auditor queue:
+Example:
 
 ```
-needs_qc
+20B-12345
+DL No: MH/20/12345
+Form 21B
 ```
 
-Super admin:
+If invalid → reject
+
+---
+
+### Step 3 — rule based verification
+
+You verify:
+
+- license present
+- valid format
+- form type valid (20/21)
+- state exists
+- pharmacy name present
+
+Return:
 
 ```
-all access
+verified_basic
 ```
 
-Build order:
+This is best without API.
 
-1. Doctor review screen
-2. Auditor review screen
-3. Admin dashboard
+---
+
+# Do NOT use GPT search
+
+Bad idea:
+
+- slow
+- hallucination risk
+- not deterministic
+- not auditable
+
+Your system must be deterministic.
+
+So:
+
+❌ GPT search
+❌ scraping
+❌ random lookup
+
+✅ structured validation
+✅ optional provider later
+
+---
+
+# Best architecture
+
+```
+extract pharmacy
+      ↓
+verify gst (API)
+      ↓
+verify drug license (rule based)
+      ↓
+flag mismatch
+```
+
+---
+
+# Your service
+
+Implement:
+
+```
+verify_drug_license(license, state, name):
+```
+
+Return:
+
+```
+{
+  status: "basic_verified",
+  format_valid: true,
+  state_valid: true,
+  api_verified: false,
+  reason: "no official api"
+}
+```
+
+---
+
+# Later (optional)
+
+Add provider:
+
+- surepass
+- signzy
+- idfy
+
+Plug later.
+
+---
+
+Your next step:
+Implement **rule-based drug license validator** first.
+
+[1]: https://genzcfo.com/growthx/drug-license-registration-in-india-process-types-and-rules?utm_source=chatgpt.com "Drug License Registration in India: Process, Types, and ..."
+[2]: https://statedrugs.gov.in/?utm_source=chatgpt.com "ONDLS|CDSCO"
+[3]: https://surepass.io/drug-license-verification-api/?utm_source=chatgpt.com "Drug License Verification API"

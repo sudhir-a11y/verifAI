@@ -550,6 +550,8 @@ def get_completed_report_latest_html(
     except CompletedLatestHtmlForbiddenError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except CompletedLatestHtmlNotFoundError as exc:
+        # Backward-compat: use-case now returns an empty report response when
+        # nothing exists, so this is unlikely; keep as 404 if it happens.
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 @router.get("/allotment-date-wise")

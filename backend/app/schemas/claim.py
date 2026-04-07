@@ -154,6 +154,7 @@ class ClaimDecideResponse(BaseModel):
     confidence: float
     recommendation: str | None = None
     flags: list[dict] = Field(default_factory=list)
+    verifications: dict[str, bool | None] = Field(default_factory=dict)
 
 
 class ClaimAdvanceRequest(BaseModel):
