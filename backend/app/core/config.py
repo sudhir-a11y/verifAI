@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -7,6 +8,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 🔥 CRITICAL: Load .env BEFORE Settings initialization
 load_dotenv()
+
+_AWS_REGION_RE = re.compile(r"\b[a-z]{2}(?:-gov)?-[a-z0-9-]+-\d\b")
+
+
+def _sanitize_aws_region(value: str | None, default: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    # Extract the first valid region token and drop anything else (guards against
+    # accidental copy/paste or injection strings in env files).
+    m = _AWS_REGION_RE.search(raw)
+    if m:
+        return m.group(0)
+    return default
 
 
 class Settings(BaseSettings):
@@ -219,6 +234,16 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("DRUG_LOOKUP_API_URL"),
     )
+
+    @field_validator("s3_region", mode="before")
+    @classmethod
+    def _validate_s3_region(cls, value: str | None):
+        return _sanitize_aws_region(value, "ap-south-1")
+
+    @field_validator("aws_textract_region", mode="before")
+    @classmethod
+    def _validate_textract_region(cls, value: str | None):
+        return _sanitize_aws_region(value, "ap-south-1")
     drug_lookup_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("DRUG_LOOKUP_API_KEY"),
@@ -270,6 +295,44 @@ class Settings(BaseSettings):
     medicine_rectify_timeout_seconds: int = Field(
         default=10800,
         validation_alias=AliasChoices("MEDICINE_RECTIFY_TIMEOUT_SECONDS"),
+    )
+
+    # ABDM HPR (Healthcare Professionals Registry) Integration
+    abdm_hpr_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ABDM_HPR_ENABLED"),
+    )
+    abdm_hpr_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ABDM_HPR_BASE_URL"),
+    )
+    abdm_hpr_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ABDM_HPR_CLIENT_ID"),
+    )
+    abdm_hpr_client_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ABDM_HPR_CLIENT_SECRET"),
+    )
+    abdm_hpr_auth_token_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ABDM_HPR_AUTH_TOKEN_URL"),
+    )
+    abdm_hpr_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices("ABDM_HPR_TIMEOUT_SECONDS"),
+    )
+    abdm_hpr_token_ttl_seconds: int = Field(
+        default=300,
+        validation_alias=AliasChoices("ABDM_HPR_TOKEN_TTL_SECONDS"),
+    )
+    abdm_hpr_cache_ttl_seconds: int = Field(
+        default=3600,
+        validation_alias=AliasChoices("ABDM_HPR_CACHE_TTL_SECONDS"),
+    )
+    abdm_hpr_login_enforcement_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ABDM_HPR_LOGIN_ENFORCEMENT_ENABLED"),
     )
 
     model_config = SettingsConfigDict(

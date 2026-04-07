@@ -138,3 +138,57 @@ class ClaimConclusionGenerateResponse(BaseModel):
     triggered_rules_count: int = 0
     source: str = "rule_engine"
 
+
+class ClaimDecideRequest(BaseModel):
+    use_llm: bool = True
+    force_refresh: bool = False
+    auto_advance: bool = False
+    actor_id: str | None = Field(default=None, max_length=100)
+
+
+class ClaimDecideResponse(BaseModel):
+    claim_id: UUID
+    final_status: str  # "approve" | "reject" | "query"
+    reason: str
+    source: str  # "ai_auto" | "doctor_override" | "hybrid"
+    confidence: float
+    recommendation: str | None = None
+    flags: list[dict] = Field(default_factory=list)
+
+
+class ClaimAdvanceRequest(BaseModel):
+    # workflow status (e.g. auto_approved). Optional if deriving from latest AI decision.
+    status: str | None = Field(default=None, max_length=60)
+    from_latest_decision: bool = False
+    note: str | None = Field(default=None, max_length=2000)
+    route_target: str | None = Field(default=None, max_length=120)
+    notify_role: str | None = Field(default=None, max_length=40)  # e.g. "auditor"
+    auto_notify: bool = False
+    actor_id: str | None = Field(default=None, max_length=100)
+
+
+class ClaimAdvanceResponse(BaseModel):
+    claim_id: UUID
+    status: ClaimStatus
+    workflow_status: str | None = None
+    route_target: str | None = None
+    notified: bool = False
+
+
+class ClaimReviewAction(str, Enum):
+    approve = "approve"
+    reject = "reject"
+    query = "query"
+
+
+class ClaimReviewRequest(BaseModel):
+    action: ClaimReviewAction
+    note: str | None = Field(default=None, max_length=2000)
+    actor_id: str | None = Field(default=None, max_length=100)
+
+
+class ClaimReviewResponse(BaseModel):
+    claim_id: UUID
+    action: ClaimReviewAction
+    recommendation: str
+    claim_status: ClaimStatus

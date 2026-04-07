@@ -399,6 +399,7 @@ def create_document(
     file_bytes: bytes,
     uploaded_by: str | None,
     retention_class: str,
+    compression_mode: str | None = None,
 ) -> DocumentResponse:
     if not _claim_exists(db, claim_id):
         raise ClaimNotFoundError
@@ -408,12 +409,16 @@ def create_document(
     object_key = f"claims/{claim_id}/documents/{uuid4().hex}_{safe_file_name}"
 
     upload_result = upload_bytes(object_key=object_key, payload=file_bytes, content_type=mime_type)
+    requested_compression = str(compression_mode or "").strip().lower()
     metadata = {
         "storage_provider": "s3",
         "bucket": upload_result["bucket"],
         "region": upload_result["region"],
         "s3_url": upload_result["url"],
         "etag": upload_result.get("etag"),
+        # `compression_mode` is currently used for merged uploads; we accept it
+        # here to keep the API stable for single-file uploads too.
+        "compression_mode_requested": requested_compression,
     }
 
     row = claim_documents_repo.insert_uploaded_document_returning_row(
@@ -930,7 +935,6 @@ def delete_documents(
         failed_document_ids=failed_ids,
         not_found_document_ids=not_found_ids,
     )
-
 
 
 

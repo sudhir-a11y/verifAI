@@ -37,9 +37,44 @@ def _normalize_tags(raw_tags: Any) -> list[str]:
             return []
     return []
 
+def _normalize_status(raw_status: Any) -> str:
+    value = str(raw_status or "").strip().lower()
+    if not value:
+        return ClaimStatus.waiting_for_documents.value
+
+    # Common legacy/variant values.
+    aliases = {
+        "ready": ClaimStatus.ready_for_assignment.value,
+        "ready_for_assign": ClaimStatus.ready_for_assignment.value,
+        "waiting": ClaimStatus.waiting_for_documents.value,
+        "waiting_documents": ClaimStatus.waiting_for_documents.value,
+        "inreview": ClaimStatus.in_review.value,
+        "review": ClaimStatus.in_review.value,
+        "needsreview": ClaimStatus.in_review.value,
+        "qc": ClaimStatus.needs_qc.value,
+        "need_qc": ClaimStatus.needs_qc.value,
+        "needsqc": ClaimStatus.needs_qc.value,
+        "done": ClaimStatus.completed.value,
+        "close": ClaimStatus.completed.value,
+        "closed": ClaimStatus.completed.value,
+        "cancelled": ClaimStatus.withdrawn.value,
+        "canceled": ClaimStatus.withdrawn.value,
+    }
+    if value in aliases:
+        return aliases[value]
+
+    # Exact match against known statuses.
+    allowed = {item.value for item in ClaimStatus}
+    if value in allowed:
+        return value
+
+    # Defensive default to avoid 500s on bad data.
+    return ClaimStatus.waiting_for_documents.value
+
 
 def _to_claim_response(row: dict[str, Any]) -> ClaimResponse:
     row["tags"] = _normalize_tags(row.get("tags"))
+    row["status"] = _normalize_status(row.get("status"))
     return ClaimResponse.model_validate(row)
 
 
@@ -122,4 +157,3 @@ def assign_claim(db: Session, claim_id: UUID, payload: ClaimAssignmentRequest) -
     )
     db.commit()
     return claim
-

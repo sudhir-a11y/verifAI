@@ -1,6 +1,6 @@
 import json
 import re
-import json
+from threading import Lock
 from typing import Any
 from uuid import UUID
 
@@ -8,52 +8,86 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.db.session import engine
 from app.schemas.claim import ClaimStatus, CreateClaimRequest
 
 
 class DuplicateClaimIdDbError(IntegrityError):
     """Marker for unique violations when inserting claims."""
 
+_COMPLETED_AT_BOOTSTRAPPED = False
+_COMPLETED_AT_BOOTSTRAP_LOCK = Lock()
+
 
 def ensure_claim_completed_at_column(db: Session) -> None:
-    db.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"))
-    db.execute(text("CREATE INDEX IF NOT EXISTS idx_claims_completed_at ON claims(completed_at)"))
+    """
+    Ensure `claims.completed_at` exists.
+
+    IMPORTANT: Don't run DDL on request sessions (it can take an
+    ACCESS EXCLUSIVE lock and block concurrent reads/writes). We run it once per
+    process using a dedicated connection that commits immediately.
+    """
+    global _COMPLETED_AT_BOOTSTRAPPED
+    if _COMPLETED_AT_BOOTSTRAPPED:
+        return
+    with _COMPLETED_AT_BOOTSTRAP_LOCK:
+        if _COMPLETED_AT_BOOTSTRAPPED:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_claims_completed_at ON claims(completed_at)"))
+        _COMPLETED_AT_BOOTSTRAPPED = True
 
 
 def ensure_claim_completed_at_column_and_backfill(db: Session) -> None:
     ensure_claim_completed_at_column(db)
-    db.execute(
-        text(
-            """
-            WITH first_completed AS (
-                SELECT
-                    we.claim_id,
-                    MIN(we.occurred_at) AS first_completed_at
-                FROM workflow_events we
-                WHERE we.event_type = 'claim_status_updated'
-                  AND COALESCE(we.event_payload->>'status', '') = 'completed'
-                GROUP BY we.claim_id
+    # Backfill can be expensive; run it once per process and commit immediately
+    # to avoid holding locks in read-only API requests.
+    # (Used by Payment Sheet + other reporting endpoints.)
+    global _COMPLETED_AT_BACKFILLED
+    if _COMPLETED_AT_BACKFILLED:
+        return
+    with _COMPLETED_AT_BACKFILL_LOCK:
+        if _COMPLETED_AT_BACKFILLED:
+            return
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    WITH first_completed AS (
+                        SELECT
+                            we.claim_id,
+                            MIN(we.occurred_at) AS first_completed_at
+                        FROM workflow_events we
+                        WHERE we.event_type = 'claim_status_updated'
+                          AND COALESCE(we.event_payload->>'status', '') = 'completed'
+                        GROUP BY we.claim_id
+                    )
+                    UPDATE claims c
+                    SET completed_at = fc.first_completed_at
+                    FROM first_completed fc
+                    WHERE c.id = fc.claim_id
+                      AND c.status = 'completed'
+                      AND c.completed_at IS NULL
+                    """
+                )
             )
-            UPDATE claims c
-            SET completed_at = fc.first_completed_at
-            FROM first_completed fc
-            WHERE c.id = fc.claim_id
-              AND c.status = 'completed'
-              AND c.completed_at IS NULL
-            """
-        )
-    )
-    db.execute(
-        text(
-            """
-            UPDATE claims
-            SET completed_at = updated_at
-            WHERE status = 'completed'
-              AND completed_at IS NULL
-              AND updated_at IS NOT NULL
-            """
-        )
-    )
+            conn.execute(
+                text(
+                    """
+                    UPDATE claims
+                    SET completed_at = updated_at
+                    WHERE status = 'completed'
+                      AND completed_at IS NULL
+                      AND updated_at IS NOT NULL
+                    """
+                )
+            )
+        _COMPLETED_AT_BACKFILLED = True
+
+
+_COMPLETED_AT_BACKFILLED = False
+_COMPLETED_AT_BACKFILL_LOCK = Lock()
 
 
 def insert_claim(db: Session, payload: CreateClaimRequest) -> dict[str, Any]:

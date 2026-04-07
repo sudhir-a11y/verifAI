@@ -4,10 +4,10 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.schemas.auth import UserRole
-from app.schemas.qc_tools import CompletedReportLatestHtmlResponse
 from app.dependencies.access_control import doctor_matches_assignment
 from app.repositories import claims_repo, decision_results_repo, report_versions_repo
+from app.schemas.auth import UserRole
+from app.schemas.qc_tools import CompletedReportLatestHtmlResponse
 
 
 class InvalidSourceError(ValueError):
@@ -24,6 +24,17 @@ class ForbiddenError(RuntimeError):
 
 class ReportNotFoundError(RuntimeError):
     pass
+
+
+def _fetch_latest_html_row(db: Session, *, claim_id: UUID, source: str) -> dict | None:
+    row = report_versions_repo.get_latest_report_html_for_claim(db, claim_id=claim_id, source=source)
+    report_html = str(row.get("report_html") or "") if isinstance(row, dict) else ""
+    if row is None or not report_html.strip():
+        row = decision_results_repo.get_latest_decision_report_html_for_claim(db, claim_id=claim_id, source=source)
+        report_html = str(row.get("report_html") or "") if isinstance(row, dict) else ""
+    if row is None or not report_html.strip():
+        return None
+    return row
 
 
 def get_completed_report_latest_html(
@@ -48,21 +59,16 @@ def get_completed_report_latest_html(
     ):
         raise ForbiddenError("doctor can access only assigned claims")
 
-    row = report_versions_repo.get_latest_report_html_for_claim(db, claim_id=claim_id, source=normalized_source)
-    report_html = str(row.get("report_html") or "") if row is not None else ""
-    if row is None or not report_html.strip():
-        row = decision_results_repo.get_latest_decision_report_html_for_claim(db, claim_id=claim_id, source=normalized_source)
+    row = _fetch_latest_html_row(db, claim_id=claim_id, source=normalized_source)
+
+    # UX: for doctor UI, if a doctor-authored report isn't present yet, fall back
+    # to the latest system report, then any report, so the timeline can render.
+    if row is None and normalized_source == "doctor":
+        row = _fetch_latest_html_row(db, claim_id=claim_id, source="system")
+    if row is None and normalized_source == "doctor":
+        row = _fetch_latest_html_row(db, claim_id=claim_id, source="any")
 
     if row is None:
-        detail = (
-            "No saved report HTML found for this claim and source."
-            if normalized_source != "any"
-            else "No saved report HTML found for this claim."
-        )
-        raise ReportNotFoundError(detail)
-
-    report_html = str(row.get("report_html") or "")
-    if not report_html.strip():
         detail = (
             "No saved report HTML found for this claim and source."
             if normalized_source != "any"
@@ -74,7 +80,7 @@ def get_completed_report_latest_html(
         claim_id=str(row.get("claim_id") or claim_id),
         external_claim_id=str(row.get("external_claim_id") or ""),
         version_no=int(row.get("version_no") or 0),
-        report_html=report_html,
+        report_html=str(row.get("report_html") or ""),
         report_status=str(row.get("report_status") or "draft"),
         report_source=str(row.get("report_source") or normalized_source),
         created_by=str(row.get("created_by") or ""),
@@ -89,3 +95,4 @@ __all__ = [
     "ReportNotFoundError",
     "get_completed_report_latest_html",
 ]
+

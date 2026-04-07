@@ -3,7 +3,11 @@
     "allow": [
       "Bash(tesseract *)",
       "Bash(sudo *)",
-      "Bash(.venv/bin/pytest *)"
+      "Bash(.venv/bin/pytest *)",
+      "Bash(cat *)",
+      "Bash(python *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(command *)"
     ]
   },
   "$version": 3

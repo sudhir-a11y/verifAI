@@ -6,6 +6,7 @@ venv/
 
 *.pem
 .codex
+.qwen
 
 # Scratch / investigations (keep repo root clean)
 tmp_*
@@ -34,3 +35,6 @@ eggs/
 .eggs/
 
 lib64/
+
+
+HFR_Documentation_PROD_Updated_16_03_2026_6a93b1c2b4.pdf

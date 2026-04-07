@@ -39,7 +39,8 @@ def _next_month_start(month_start: date) -> date:
 def _resolve_month_start(month: str | None) -> date:
     month_text = str(month or "").strip()
     if month_text:
-        if not re.fullmatch(r"\\d{4}-\\d{2}", month_text):
+        # Expect HTML `<input type="month">` style value, e.g. "2026-03".
+        if not re.fullmatch(r"\d{4}-\d{2}", month_text):
             raise InvalidMonthError("month must be in YYYY-MM format.")
         try:
             return date.fromisoformat(f"{month_text}-01")
@@ -99,4 +100,3 @@ def get_payment_sheet(
         "total_amount": float(total_amount),
         "items": items,
     }
-

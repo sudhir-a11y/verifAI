@@ -49,3 +49,43 @@ class TeamRightWorksCaseIntakeResponse(BaseModel):
     message: str
 
 
+# ────────────────────────────────────────────────────────────────────
+# ABDM HPR (Healthcare Professionals Registry) schemas
+# ────────────────────────────────────────────────────────────────────
+
+class AbdmHprDoctorVerificationResponse(BaseModel):
+    """Response model for ABDM HPR doctor verification."""
+
+    hpr_id: str = Field(max_length=100)
+    name: str = Field(max_length=255)
+    registration_number: str = Field(default="", max_length=100)
+    status: str = Field(default="Unknown", max_length=50)
+    qualifications: list[str] = Field(default_factory=list)
+    speciality: str | None = Field(default=None, max_length=200)
+    verified: bool = True
+    message: str = Field(default="Doctor verified successfully", max_length=500)
+
+
+class AbdmHprDoctorSearchRequest(BaseModel):
+    """Request model for searching doctors by registration number."""
+
+    registration_number: str = Field(min_length=1, max_length=100)
+
+
+class AbdmHprDoctorSearchResult(BaseModel):
+    """Single result from an ABDM HPR doctor search."""
+
+    hpr_id: str = Field(max_length=100)
+    name: str = Field(max_length=255)
+    registration_number: str = Field(max_length=100)
+    status: str = Field(max_length=50)
+    speciality: str | None = None
+
+
+class AbdmHprDoctorSearchResponse(BaseModel):
+    """Response model for ABDM HPR doctor search."""
+
+    total: int
+    items: list[AbdmHprDoctorSearchResult]
+
+

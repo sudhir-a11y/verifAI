@@ -983,6 +983,33 @@ tbody tr:hover {
   line-height: 1.45;
 }
 
+.case-review-panel {
+  border: 1px solid rgba(14, 79, 134, 0.22);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--card-soft);
+}
+
+.case-review-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+
+.case-review-label {
+  font-size: 12px;
+  color: #3f5872;
+  padding-top: 8px;
+  font-weight: 600;
+}
+
+.case-review-panel textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
 @media (max-width: 768px) {
   .case-detail-key {
     width: 140px;

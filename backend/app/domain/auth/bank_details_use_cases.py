@@ -73,7 +73,12 @@ def list_user_bank_details(
         )
         for r in rows
     ]
-    return UserBankDetailsListResponse(total=total, items=items)
+    return UserBankDetailsListResponse(
+        total=total,
+        limit=int(limit),
+        offset=int(offset),
+        items=items,
+    )
 
 
 def upsert_user_bank_details(

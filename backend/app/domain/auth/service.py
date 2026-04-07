@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from passlib.context import CryptContext
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.domain.integrations.abdm_hpr_use_cases import (
+    DoctorNotVerifiedError,
+    DoctorVerificationError,
+    is_abdm_hpr_enabled,
+    is_abdm_login_enforcement_enabled,
+    verify_doctor_for_login,
+    verify_doctor_with_fallback,
+)
 from app.repositories import auth_logs_repo, user_sessions_repo, users_repo
 from app.schemas.auth import (
     AuthUserResponse,
@@ -20,6 +30,7 @@ from app.schemas.auth import (
 )
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
 
 
 class AuthenticationError(Exception):
@@ -35,6 +46,11 @@ class UserAlreadyExistsError(Exception):
 
 
 class UserNotFoundError(Exception):
+    pass
+
+
+class AbdmHprVerificationSkippedError(Exception):
+    """Raised when ABDM HPR verification is skipped due to fallback mode."""
     pass
 
 
@@ -100,13 +116,89 @@ def _log_auth_attempt(
     )
 
 
+def _verify_doctor_for_login(
+    db: Session,
+    user_id: int,
+) -> dict[str, Any] | None:
+    """Perform ABDM HPR verification for a doctor user.
+
+    This function:
+      1. Retrieves the doctor's HPR ID from the database
+      2. If HPR ID exists, verifies it against the ABDM HPR registry
+      3. If HPR ID is missing and enforcement is enabled, raises an error
+      4. Caches and returns the verification details
+
+    Raises:
+        AuthenticationError: If verification fails and enforcement is enabled.
+    """
+    hpr_id = users_repo.get_user_hpr_id(db, user_id)
+
+    if not hpr_id:
+        # Doctor has no HPR ID set
+        if is_abdm_login_enforcement_enabled():
+            logger.warning(
+                "Doctor login blocked: no HPR ID set. user_id=%d", user_id
+            )
+            raise AuthenticationError(
+                "Doctor verification required. Please register your ABDM HPR ID with an administrator."
+            )
+        else:
+            logger.info(
+                "ABDM HPR enforcement disabled; allowing doctor login without HPR ID. user_id=%d",
+                user_id,
+            )
+            return None
+
+    # Verify the doctor via ABDM HPR
+    try:
+        verification_result = verify_doctor_for_login(hpr_id)
+    except DoctorNotVerifiedError as exc:
+        if is_abdm_login_enforcement_enabled():
+            logger.warning(
+                "Doctor login blocked: HPR verification failed. user_id=%d, hpr_id=%s",
+                user_id,
+                hpr_id,
+            )
+            raise AuthenticationError(str(exc)) from exc
+        else:
+            logger.warning(
+                "ABDM HPR verification failed but enforcement disabled: %s", exc
+            )
+            return None
+    except DoctorVerificationError as exc:
+        if is_abdm_login_enforcement_enabled():
+            logger.warning(
+                "Doctor login blocked: HPR verification error. user_id=%d, hpr_id=%s",
+                user_id,
+                hpr_id,
+            )
+            raise AuthenticationError(str(exc)) from exc
+        else:
+            logger.warning(
+                "ABDM HPR verification error but enforcement disabled: %s", exc
+            )
+            return None
+
+    # Verification successful — update user's HPR ID if it was recently set
+    # (in case it was updated since last login)
+    users_repo.update_user_hpr_id(db, user_id, hpr_id)
+
+    return verification_result
+
+
 def authenticate_and_create_session(
     db: Session,
     username: str,
     password: str,
     ip_address: str,
     user_agent: str,
-) -> tuple[AuthenticatedUser, str, datetime]:
+) -> tuple[AuthenticatedUser, str, datetime, dict[str, Any] | None]:
+    """Authenticate user, create session, and perform ABDM HPR verification for doctors.
+
+    Returns:
+        Tuple of (user, raw_token, expires_at, abdm_hpr_details)
+        abdm_hpr_details is None for non-doctor roles or when ABDM is disabled.
+    """
     username_raw = str(username or "").strip()
     username_norm = re.sub(r"\s+", "", username_raw).lower()
 
@@ -159,6 +251,14 @@ def authenticate_and_create_session(
         is_active=bool(user_row["is_active"]),
     )
 
+    # ABDM HPR verification for doctor role users
+    abdm_hpr_details: dict[str, Any] | None = None
+    if user.role == UserRole.doctor and is_abdm_hpr_enabled():
+        abdm_hpr_details = _verify_doctor_for_login(
+            db=db,
+            user_id=user.id,
+        )
+
     raw_token = secrets.token_urlsafe(48)
     token_hash = _hash_token(raw_token)
     expires_at = datetime.now(timezone.utc) + timedelta(
@@ -177,7 +277,7 @@ def authenticate_and_create_session(
     )
     db.commit()
 
-    return user, raw_token, expires_at
+    return user, raw_token, expires_at, abdm_hpr_details
 
 
 def get_user_by_token(db: Session, raw_token: str) -> AuthenticatedUser | None:

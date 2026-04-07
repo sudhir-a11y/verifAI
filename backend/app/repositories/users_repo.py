@@ -36,6 +36,26 @@ def get_user_by_id(db: Session, user_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_user_hpr_id(db: Session, user_id: int) -> str | None:
+    """Get the ABDM HPR ID for a user. Returns None if not set."""
+    row = db.execute(
+        text("SELECT abdm_hpr_id FROM users WHERE id = :user_id LIMIT 1"),
+        {"user_id": user_id},
+    ).mappings().first()
+    if row is None:
+        return None
+    val = row.get("abdm_hpr_id")
+    return str(val).strip() if val else None
+
+
+def update_user_hpr_id(db: Session, user_id: int, hpr_id: str | None) -> None:
+    """Update the ABDM HPR ID for a user."""
+    db.execute(
+        text("UPDATE users SET abdm_hpr_id = :hpr_id WHERE id = :user_id"),
+        {"user_id": user_id, "hpr_id": hpr_id},
+    )
+
+
 def get_user_id_by_username(db: Session, username: str) -> int | None:
     """Get user id by username. Returns None if not found."""
     row = db.execute(

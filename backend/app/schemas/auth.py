@@ -29,6 +29,14 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     expires_at: datetime
     user: AuthUserResponse
+    abdm_hpr_verified: bool | None = Field(
+        default=None,
+        description="Whether the doctor was verified via ABDM HPR (None for non-doctor roles).",
+    )
+    abdm_hpr_details: dict[str, Any] | None = Field(
+        default=None,
+        description="ABDM HPR verification details (name, status, etc.) when applicable.",
+    )
 
 
 class LogoutResponse(BaseModel):

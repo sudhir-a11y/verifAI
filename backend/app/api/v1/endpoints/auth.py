@@ -57,7 +57,7 @@ def login_endpoint(
     user_agent = request.headers.get("user-agent", "unknown")
 
     try:
-        user, token, expires_at = authenticate_and_create_session(
+        user, token, expires_at, abdm_hpr_details = authenticate_and_create_session(
             db=db,
             username=payload.username,
             password=payload.password,
@@ -67,10 +67,16 @@ def login_endpoint(
     except AuthenticationError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
+    abdm_hpr_verified: bool | None = None
+    if abdm_hpr_details is not None:
+        abdm_hpr_verified = abdm_hpr_details.get("verified", False)
+
     return LoginResponse(
         access_token=token,
         expires_at=expires_at,
         user=user.as_response(),
+        abdm_hpr_verified=abdm_hpr_verified,
+        abdm_hpr_details=abdm_hpr_details,
     )
 
 

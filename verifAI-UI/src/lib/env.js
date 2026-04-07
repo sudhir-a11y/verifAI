@@ -16,7 +16,9 @@ export function apiBaseUrl() {
 			port === "5173" &&
 			(hostname === "localhost" || hostname === "127.0.0.1")
 		) {
-			return "http://127.0.0.1:8080";
+			// In local dev, rely on Vite's proxy (`vite.config.js`) so all calls to
+			// `/api/*` go to the backend target without hardcoding a port here.
+			return "";
 		}
 	} catch {
 		// ignore (SSR / no window)

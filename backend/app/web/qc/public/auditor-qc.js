@@ -88,13 +88,18 @@
   const docSelectedNameEl = document.getElementById('doc-selected-name');
   const docPreviewContainerEl = document.getElementById('doc-preview-container');
   const docPreviewEl = document.getElementById('doc-preview');
+  const backBtn = document.getElementById('qc-back-btn');
   const reloadBtn = document.getElementById('qc-reload-btn');
   const sendBackBtn = document.getElementById('qc-send-back-btn');
   const runRulesBtn = document.getElementById('qc-run-rules-btn');
   const generateConclusionBtn = document.getElementById('qc-generate-conclusion-btn');
+  const runDecideBtn = document.getElementById('qc-run-decide-btn');
   const applyConclusionBtn = document.getElementById('qc-apply-conclusion-btn');
   const saveBtn = document.getElementById('qc-save-btn');
   const saveMarkBtn = document.getElementById('qc-save-mark-btn');
+  const finalApproveBtn = document.getElementById('qc-final-approve-btn');
+  const finalRejectBtn = document.getElementById('qc-final-reject-btn');
+  const finalQueryBtn = document.getElementById('qc-final-query-btn');
   const conclusionOnlyEl = document.getElementById('qc-conclusion-only');
   const layoutEl = document.getElementById('qc-layout');
   const splitterEl = document.getElementById('qc-splitter');
@@ -107,6 +112,92 @@
   const SPLIT_STORAGE_KEY = 'qc_auditor_split_left_pct';
   const SPLIT_MIN_PERCENT = 35;
   const SPLIT_MAX_PERCENT = 70;
+  const CLAIM_SYNC_STORAGE_KEY = 'qc_claim_refresh_signal';
+  const CLAIM_SYNC_CHANNEL = 'qc_claim_events';
+
+  function broadcastClaimSync(type, payload) {
+    const msg = { type: type || 'claim-status-updated', ...(payload || {}) };
+    try {
+      localStorage.setItem(CLAIM_SYNC_STORAGE_KEY, JSON.stringify(msg));
+      localStorage.removeItem(CLAIM_SYNC_STORAGE_KEY);
+    } catch (_err) {
+    }
+    try {
+      if (typeof window.BroadcastChannel === 'function') {
+        const channel = new window.BroadcastChannel(CLAIM_SYNC_CHANNEL);
+        channel.postMessage(msg);
+        channel.close();
+      }
+    } catch (_err) {
+    }
+  }
+
+  async function submitFinalReview(action) {
+    const act = String(action || '').trim().toLowerCase();
+    if (!/^(approve|reject|query)$/.test(act)) return;
+    const note = String(window.prompt('Enter reviewer note (optional):', '') || '').trim();
+
+    setBusy(true);
+    setMessage('', 'Submitting final decision...');
+    try {
+      const resp = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: act, note: note }),
+      });
+      setMessage('ok', 'Final decision saved: ' + act + '.');
+      broadcastClaimSync('claim-status-updated', { claim_uuid: params.claimUuid, status: (resp && resp.claim_status) ? resp.claim_status : '' });
+      if (act === 'approve' || act === 'reject') {
+        window.setTimeout(function () {
+          window.location.href = '/qc/auditor/audit-claims';
+        }, 900);
+      }
+    } catch (err) {
+      setMessage('err', (err && err.message) ? err.message : 'Final decision failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runAiDecide() {
+    const confirmed = window.confirm('Run AI decision for this claim now? This may take some time.');
+    if (!confirmed) return;
+
+    setBusy(true);
+    setMessage('', 'Running AI decision (/decide)...');
+    try {
+      const decision = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/decide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          use_llm: true,
+          force_refresh: false,
+          auto_advance: true,
+        }),
+      });
+
+      let statusText = '';
+      try {
+        const claim = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid));
+        const claimStatus = claim && claim.status ? String(claim.status) : '';
+        statusText = claimStatus ? (' | claim status: ' + claimStatus) : '';
+        broadcastClaimSync('claim-status-updated', { claim_uuid: params.claimUuid, status: claimStatus });
+      } catch (_err) {
+        broadcastClaimSync('claim-status-updated', { claim_uuid: params.claimUuid });
+      }
+
+      const rec = decision && decision.recommendation ? String(decision.recommendation) : '';
+      const finalStatus = decision && decision.final_status ? String(decision.final_status) : '';
+      const conf = (decision && typeof decision.confidence === 'number') ? decision.confidence : null;
+      const confText = (conf != null) ? (' | confidence: ' + String(conf)) : '';
+
+      setMessage('ok', 'AI decide done: ' + (rec || finalStatus || 'ok') + confText + statusText);
+    } catch (err) {
+      setMessage('err', (err && err.message) ? err.message : 'AI decide failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function clampSplitPercent(value) {
     const num = Number(value);
@@ -479,22 +570,19 @@
 
   async function loadReportHtml() {
     if (reportEditorEl) reportEditorEl.innerHTML = '<p class="muted">Loading report...</p>';
-    const sources = ['doctor', 'system', 'any'];
-
-    for (let i = 0; i < sources.length; i += 1) {
-      const src = sources[i];
-      try {
-        const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=' + encodeURIComponent(src));
-        const html = String(payload && payload.report_html ? payload.report_html : '').trim();
-        if (html) {
-          loadedSource = String(payload.report_source || src || 'doctor').toLowerCase();
-          if (reportSourceEl) reportSourceEl.textContent = 'loaded source: ' + loadedSource;
-          reportEditorEl.innerHTML = html;
-          syncConclusionOnlyFromReport();
-          return;
-        }
-      } catch (_err) {
+    // The backend latest-html endpoint already falls back doctor→system→any.
+    // Avoid spamming 404s in logs by calling it once.
+    try {
+      const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=doctor');
+      const html = String(payload && payload.report_html ? payload.report_html : '').trim();
+      if (html) {
+        loadedSource = String(payload.report_source || 'doctor').toLowerCase();
+        if (reportSourceEl) reportSourceEl.textContent = 'loaded source: ' + loadedSource;
+        reportEditorEl.innerHTML = html;
+        syncConclusionOnlyFromReport();
+        return;
       }
+    } catch (_err) {
     }
 
     const structuredFallback = await loadStructuredFallbackReport();
@@ -730,13 +818,18 @@
     reportEditorEl.innerHTML = wrap.innerHTML;
   }
   function setBusy(busy) {
+    if (backBtn) backBtn.disabled = !!busy;
     if (saveBtn) saveBtn.disabled = !!busy;
     if (saveMarkBtn) saveMarkBtn.disabled = !!busy;
     if (reloadBtn) reloadBtn.disabled = !!busy;
     if (sendBackBtn) sendBackBtn.disabled = !!busy;
     if (runRulesBtn) runRulesBtn.disabled = !!busy;
     if (generateConclusionBtn) generateConclusionBtn.disabled = !!busy;
+    if (runDecideBtn) runDecideBtn.disabled = !!busy;
     if (applyConclusionBtn) applyConclusionBtn.disabled = !!busy;
+    if (finalApproveBtn) finalApproveBtn.disabled = !!busy;
+    if (finalRejectBtn) finalRejectBtn.disabled = !!busy;
+    if (finalQueryBtn) finalQueryBtn.disabled = !!busy;
     if (conclusionOnlyEl) conclusionOnlyEl.disabled = !!busy;
     if (docSelectEl) docSelectEl.disabled = !!busy || currentDocs.length === 0;
     if (docPreviewBtn) docPreviewBtn.disabled = !!busy || currentDocs.length === 0;
@@ -871,6 +964,12 @@
     });
   }
 
+  if (runDecideBtn) {
+    runDecideBtn.addEventListener('click', async function () {
+      await runAiDecide();
+    });
+  }
+
   if (applyConclusionBtn) {
     applyConclusionBtn.addEventListener('click', function () {
       try {
@@ -940,6 +1039,30 @@
     });
   }
 
+  if (backBtn) {
+    backBtn.addEventListener('click', function () {
+      window.location.href = '/qc/auditor/audit-claims';
+    });
+  }
+
+  if (finalApproveBtn) {
+    finalApproveBtn.addEventListener('click', async function () {
+      await submitFinalReview('approve');
+    });
+  }
+
+  if (finalRejectBtn) {
+    finalRejectBtn.addEventListener('click', async function () {
+      await submitFinalReview('reject');
+    });
+  }
+
+  if (finalQueryBtn) {
+    finalQueryBtn.addEventListener('click', async function () {
+      await submitFinalReview('query');
+    });
+  }
+
   initPanelSplitter();
 
   Promise.all([loadReportHtml(), loadDocuments()]).then(function () {
@@ -949,12 +1072,6 @@
     setMessage('err', err && err.message ? err.message : 'Failed to load review workspace.');
   });
 })();
-
-
-
-
-
-
 
 
 

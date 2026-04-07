@@ -2055,6 +2055,7 @@
     const routeInfo = parseRoute();
     const activeRouteRole = String((routeInfo && routeInfo.routeRole) || (me && me.role) || 'doctor').trim();
     const isAuditorRole = activeRouteRole === 'auditor' || !!(me && me.role === 'auditor');
+    const canSubmitReview = activeRouteRole === 'super_admin' || activeRouteRole === 'user' || activeRouteRole === 'auditor';
     const backPage = backPageParam || (activeRouteRole === 'user' ? 'upload-document' : (isAuditorRole ? 'audit-claims' : 'assigned-cases'));
     const preferredReportSourceParam = String(routeParams.get('report_source') || 'doctor').trim().toLowerCase();
     let preferredReportSource = (preferredReportSourceParam === 'system' || preferredReportSourceParam === 'doctor') ? preferredReportSourceParam : 'doctor';
@@ -2076,6 +2077,28 @@
       + '</div></div>'
       + '<p id="case-detail-msg"></p>'
       + '<div class="table-wrap claim-status-table-wrap"><table><tbody id="case-detail-summary"></tbody></table></div>'
+      + (canSubmitReview
+        ? (
+          '<h3 style="margin-top:16px;">Reviewer Decision</h3>'
+          + '<div class="case-review-panel">'
+          + '<div class="case-review-row">'
+          + '<label class="case-review-label" for="case-review-action">Action</label>'
+          + '<select id="case-review-action">'
+          + '<option value="approve">Approve</option>'
+          + '<option value="reject">Reject</option>'
+          + '<option value="query" selected>Query</option>'
+          + '</select>'
+          + '</div>'
+          + '<div class="case-review-row">'
+          + '<label class="case-review-label" for="case-review-note">Note</label>'
+          + '<textarea id="case-review-note" rows="3" placeholder="Add reviewer note (optional)"></textarea>'
+          + '</div>'
+          + '<div class="link-row case-review-actions">'
+          + '<button type="button" id="case-review-submit">Submit Review</button>'
+          + '</div>'
+          + '</div>'
+        )
+        : '')
       + '<h3 style="margin-top:16px;">Case Documents</h3>'
       + '<div class="link-row case-detail-actions">'
       + '<button type="button" id="case-analyze-ai">Analyze Admission Need (VerifAI)</button>'
@@ -2121,7 +2144,10 @@
     const backFromFullBtn = document.getElementById('case-report-back');
     const statusBtn = document.getElementById('case-change-status');
     const sendBackBtn = document.getElementById('case-send-back');
-    const actionButtons = [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn, sendBackBtn].filter(Boolean);
+    const reviewActionEl = document.getElementById('case-review-action');
+    const reviewNoteEl = document.getElementById('case-review-note');
+    const reviewSubmitBtn = document.getElementById('case-review-submit');
+    const actionButtons = [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn, sendBackBtn, reviewSubmitBtn].filter(Boolean);
 
     if (isAuditorRole) {
       [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn].forEach(function (btn) {
@@ -2147,6 +2173,36 @@
       actionButtons.forEach((btn) => {
         if (btn) btn.disabled = !!disabled;
       });
+    }
+
+    async function submitReviewerDecision() {
+      if (!canSubmitReview) return;
+      if (!currentClaim) return;
+      const action = String(reviewActionEl ? reviewActionEl.value : '').trim().toLowerCase();
+      if (!action || !/^(approve|reject|query)$/.test(action)) {
+        setMessage('case-detail-msg', 'err', 'Select a valid reviewer action.');
+        return;
+      }
+      const note = String(reviewNoteEl ? reviewNoteEl.value : '').trim();
+
+      setActionDisabled(true);
+      setMessage('case-detail-msg', '', 'Submitting review...');
+      appendLog('Reviewer decision submit started: ' + action);
+      try {
+        const resp = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action, note: note }),
+        });
+        setMessage('case-detail-msg', 'ok', 'Review submitted: ' + String((resp && resp.recommendation) || action) + '.');
+        appendLog('Review submitted. Recommendation: ' + String((resp && resp.recommendation) || ''));
+        await loadDetail();
+      } catch (err) {
+        setMessage('case-detail-msg', 'err', err.message || 'Review submit failed.');
+        appendLog('Review submit failed: ' + String(err && err.message ? err.message : err));
+      } finally {
+        setActionDisabled(false);
+      }
     }
 
     function renderDiagnosisChecklistResult(payload) {
@@ -5024,6 +5080,12 @@
         } finally {
           setActionDisabled(false);
         }
+      });
+    }
+
+    if (reviewSubmitBtn) {
+      reviewSubmitBtn.addEventListener('click', async function () {
+        await submitReviewerDecision();
       });
     }
 
@@ -8256,7 +8318,6 @@ async function renderLegacyMigration() {
 
   boot();
 })();
-
 
 
 

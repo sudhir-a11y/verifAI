@@ -21,6 +21,31 @@ def get_latest_decision_for_claim(db: Session, claim_id: UUID) -> dict[str, Any]
     return dict(row) if row is not None else None
 
 
+def get_latest_decision_meta_for_claim(db: Session, claim_id: UUID) -> dict[str, Any] | None:
+    """Return latest decision metadata used for routing/advancing workflow."""
+    row = db.execute(
+        text(
+            """
+            SELECT
+                id,
+                recommendation,
+                route_target,
+                manual_review_required,
+                review_priority,
+                explanation_summary,
+                generated_by,
+                generated_at
+            FROM decision_results
+            WHERE claim_id = :claim_id
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """
+        ),
+        {"claim_id": str(claim_id)},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
 def delete_by_claim_id(db: Session, *, claim_id: str) -> int:
     return int(
         db.execute(text("DELETE FROM decision_results WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0
@@ -36,6 +61,26 @@ def deactivate_active_for_claim(db: Session, *, claim_id: str) -> None:
             """
         ),
         {"claim_id": str(claim_id)},
+    )
+
+
+def set_latest_route_target(db: Session, *, claim_id: str, route_target: str) -> None:
+    """Update route_target on the latest decision_result row for a claim."""
+    db.execute(
+        text(
+            """
+            UPDATE decision_results
+            SET route_target = :route_target
+            WHERE id = (
+                SELECT id
+                FROM decision_results
+                WHERE claim_id = :claim_id
+                ORDER BY generated_at DESC
+                LIMIT 1
+            )
+            """
+        ),
+        {"claim_id": str(claim_id), "route_target": str(route_target or "")[:120]},
     )
 
 

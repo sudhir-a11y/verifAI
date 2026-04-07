@@ -29,10 +29,30 @@ def get_current_user(
     return user
 
 
-def require_roles(*roles: UserRole):
+def _flatten_roles(raw_roles: tuple[object, ...]) -> tuple[UserRole, ...]:
+    flattened: list[UserRole] = []
+    for item in raw_roles:
+        if item is None:
+            continue
+        if isinstance(item, UserRole):
+            flattened.append(item)
+            continue
+        if isinstance(item, (list, tuple, set)):
+            for sub in item:
+                if isinstance(sub, UserRole):
+                    flattened.append(sub)
+            continue
+    return tuple(flattened)
+
+
+def require_roles(*roles: object):
+    normalized_roles = _flatten_roles(roles)
+    if not normalized_roles:
+        raise RuntimeError("require_roles() called without valid UserRole values")
+
     def _dependency(current_user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
-        if current_user.role not in roles:
-            allowed = ", ".join([r.value for r in roles])
+        if current_user.role not in normalized_roles:
+            allowed = ", ".join([r.value for r in normalized_roles])
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"role not allowed; required: {allowed}",
