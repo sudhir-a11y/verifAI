@@ -41,3 +41,12 @@ def test_final_status_to_db_recommendation() -> None:
     assert final_status_to_decision_recommendation("approve") == "approve"
     assert final_status_to_decision_recommendation("reject") == "reject"
     assert final_status_to_decision_recommendation("query") == "need_more_evidence"
+
+
+def test_ai_decision_override_is_used_when_provided() -> None:
+    out = decide_final(
+        checklist_result={"recommendation": "approve", "ai_decision": "reject", "ai_confidence": 0.9},
+        doctor_verification=None,
+        registry_verifications={},
+    )
+    assert out["ai_decision"] == "reject"

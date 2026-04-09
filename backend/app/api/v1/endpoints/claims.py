@@ -1,13 +1,19 @@
 import json
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps.auth import require_roles
 from app.ai.checklist_engine import run_checklist as run_structured_checklist
 from app.ai.claims_conclusion import generate_ai_medico_legal_conclusion
-from app.ai.decision_engine import decide_final, final_status_to_decision_recommendation
+from app.ai.decision_engine import (
+    compute_risk_score,
+    decide_final,
+    detect_conflicts,
+    final_status_to_decision_recommendation,
+)
 from app.ai.doctor_verification import verify_doctor_decision
 from app.ai.provider_verifications import (
     doctor_verify,
@@ -15,7 +21,8 @@ from app.ai.provider_verifications import (
     gst_verify,
     hospital_gst_verify,
 )
-from app.db.session import get_db
+from app.core.config import settings
+from app.db.session import SessionLocal, get_db
 from app.domain.claims.events import try_record_workflow_event
 from app.domain.claims.use_cases import (
     ClaimNotFoundError,
@@ -31,13 +38,17 @@ from app.domain.claims.reports_use_cases import save_claim_report_html
 from app.domain.claims.validation import InvalidDoctorAssignmentError, normalize_single_doctor_id
 from app.repositories import decision_results_repo
 from app.repositories import doctor_verifications_repo
+from app.repositories import auditor_verifications_repo
 from app.schemas.auth import UserRole
+from app.schemas.auditor_verification import AuditorVerificationResponse, AuditorVerificationSubmitRequest
 from app.schemas.claim import (
     ClaimAssignmentRequest,
     ClaimAdvanceRequest,
     ClaimAdvanceResponse,
     ClaimDecideRequest,
     ClaimDecideResponse,
+    ClaimPrepareRequest,
+    ClaimPrepareResponse,
     ClaimReviewAction,
     ClaimReviewRequest,
     ClaimReviewResponse,
@@ -46,6 +57,8 @@ from app.schemas.claim import (
     ClaimReportGrammarCheckResponse,
     ClaimReportSaveRequest,
     ClaimReportSaveResponse,
+    ClaimReportAIGenerateRequest,
+    ClaimReportAIGenerateResponse,
     ClaimConclusionGenerateRequest,
     ClaimConclusionGenerateResponse,
     ClaimResponse,
@@ -59,6 +72,7 @@ from app.schemas.doctor_verification import DoctorVerificationResponse, DoctorVe
 from app.schemas.extraction import ExtractionProvider
 from app.dependencies.access_control import doctor_matches_assignment
 from app.domain.auth.service import AuthenticatedUser
+from app.ml_decision import predict_final_decision
 from app.ai.structuring import (
     ClaimStructuredDataNotFoundError,
     ClaimStructuringError,
@@ -72,6 +86,10 @@ from app.domain.checklist.checklist_use_cases import (
     get_latest_claim_checklist,
 )
 from app.workflows.claim_pipeline import run_claim_pipeline
+from app.workflows.claim_freshness import is_artifact_fresh_for_claim
+from app.workflows.prepare_flow import prepare_claim_for_ai
+from app.ai.report_generator import AIReportGeneratorError, generate_ai_report_html
+from app.repositories import checklist_context_repo
 
 router = APIRouter(prefix="/claims", tags=["claims"])
 
@@ -226,6 +244,116 @@ def save_claim_report_html_endpoint(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"failed to save report: {exc}") from exc
+
+
+@router.post("/{claim_id}/reports/ai-generate", response_model=ClaimReportAIGenerateResponse)
+def generate_claim_report_ai_endpoint(
+    claim_id: UUID,
+    payload: ClaimReportAIGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)),
+) -> ClaimReportAIGenerateResponse:
+    try:
+        existing = get_claim(db, claim_id)
+    except ClaimNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="claim not found") from exc
+
+    if current_user.role == UserRole.doctor and not doctor_matches_assignment(existing.assigned_doctor_id, current_user.username):
+        raise HTTPException(status_code=403, detail="doctor can access only assigned claims")
+
+    actor_id = (payload.actor_id or current_user.username or "").strip() or current_user.username
+
+    # Ensure structured data exists (AI report generator prefers it).
+    try:
+        structured = get_claim_structured_data(db, claim_id)
+    except ClaimStructuredDataNotFoundError:
+        structured = None
+    if structured is None and bool(payload.auto_generate_structured):
+        try:
+            structured = generate_claim_structured_data(
+                db=db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                use_llm=bool(payload.use_llm),
+                force_refresh=bool(payload.force_refresh),
+            )
+        except Exception:
+            structured = None
+
+    # Pull latest checklist payload (contains ai_decision/ai_confidence + triggered rules).
+    checklist_latest = None
+    try:
+        checklist_latest = get_latest_claim_checklist(db=db, claim_id=claim_id)
+    except Exception:
+        checklist_latest = None
+    checklist_payload = checklist_latest.model_dump() if checklist_latest and hasattr(checklist_latest, "model_dump") else {}
+
+    decision_row = decision_results_repo.get_latest_decision_row_for_claim(db, claim_id)
+    decision_payload = decision_row.get("decision_payload") if isinstance(decision_row, dict) else {}
+    if isinstance(decision_payload, str):
+        try:
+            decision_payload = json.loads(decision_payload)
+        except Exception:
+            decision_payload = {}
+    if not isinstance(decision_payload, dict):
+        decision_payload = {}
+
+    extraction_rows = checklist_context_repo.list_latest_extractions_per_document(db, claim_id=claim_id)
+
+    claim_dict = {
+        "id": str(existing.id),
+        "external_claim_id": existing.external_claim_id,
+        "patient_name": existing.patient_name,
+        "status": existing.status,
+        "priority": existing.priority,
+        "tags": existing.tags,
+        "generated_by": actor_id,
+    }
+
+    try:
+        ai_out = generate_ai_report_html(
+            claim=claim_dict,
+            structured_data=structured if isinstance(structured, dict) else {},
+            extraction_rows=extraction_rows,
+            checklist_payload=checklist_payload if isinstance(checklist_payload, dict) else {},
+            decision_payload=decision_payload,
+        )
+    except AIReportGeneratorError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI report generator failed: {exc}") from exc
+
+    report_html = str(ai_out.get("report_html") or "").strip()
+    if not report_html:
+        raise HTTPException(status_code=502, detail="AI report generator returned empty report_html")
+
+    saved = False
+    saved_version_no: int | None = None
+    if bool(payload.save):
+        report_status = str(payload.report_status or "draft").strip().lower() or "draft"
+        created_by = actor_id if actor_id.lower().startswith("system:") else f"system:{actor_id}"
+        resp = save_claim_report_html(
+            db,
+            claim_id=claim_id,
+            report_html=report_html,
+            report_status=report_status,
+            report_source="system",
+            actor_id=actor_id,
+            report_created_by=created_by,
+            label_created_by=current_user.username,
+            is_auditor=current_user.role == UserRole.auditor,
+        )
+        saved = True
+        saved_version_no = int(resp.version_no)
+
+    return ClaimReportAIGenerateResponse(
+        claim_id=claim_id,
+        report_html=report_html,
+        saved=saved,
+        saved_version_no=saved_version_no,
+        model=str(ai_out.get("model") or "") or None,
+        warnings=[str(x) for x in (ai_out.get("warnings") or []) if str(x).strip()],
+    )
 
 
 
@@ -388,6 +516,17 @@ def generate_claim_structured_data_endpoint(
 
     actor_id = (payload.actor_id or current_user.username or "").strip() or current_user.username
     try:
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_structuring_started",
+            payload={
+                "use_llm": bool(payload.use_llm),
+                "force_refresh": bool(payload.force_refresh),
+                "source": "structured_data_endpoint",
+            },
+        )
         data = generate_claim_structured_data(
             db=db,
             claim_id=claim_id,
@@ -395,17 +534,41 @@ def generate_claim_structured_data_endpoint(
             use_llm=bool(payload.use_llm),
             force_refresh=bool(payload.force_refresh),
         )
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_structuring_completed",
+            payload={
+                "source": (data.get("source") if isinstance(data, dict) else None),
+                "confidence": (data.get("confidence") if isinstance(data, dict) else None),
+            },
+        )
         return ClaimStructuredDataResponse.model_validate(data)
     except ClaimStructuringError as exc:
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_structuring_failed",
+            payload={"error": str(exc)},
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_structuring_failed",
+            payload={"error": str(exc), "error_type": type(exc).__name__},
+        )
         raise HTTPException(status_code=500, detail=f"structured data generation failed: {exc}") from exc
 
 
 @router.get("/{claim_id}/structured-data", response_model=ClaimStructuredDataResponse)
 def get_claim_structured_data_endpoint(
     claim_id: UUID,
-    auto_generate: bool = Query(default=False),
+    auto_generate: bool = Query(default=True),
     use_llm: bool = Query(default=True),
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)),
@@ -426,6 +589,13 @@ def get_claim_structured_data_endpoint(
             raise HTTPException(status_code=404, detail="structured data not found")
         actor_id = current_user.username
         try:
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="claim_structuring_started",
+                payload={"use_llm": bool(use_llm), "force_refresh": True, "source": "structured_data_autogenerate"},
+            )
             data = generate_claim_structured_data(
                 db=db,
                 claim_id=claim_id,
@@ -433,17 +603,41 @@ def get_claim_structured_data_endpoint(
                 use_llm=bool(use_llm),
                 force_refresh=True,
             )
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="claim_structuring_completed",
+                payload={
+                    "source": (data.get("source") if isinstance(data, dict) else None),
+                    "confidence": (data.get("confidence") if isinstance(data, dict) else None),
+                },
+            )
             return ClaimStructuredDataResponse.model_validate(data)
         except ClaimStructuringError as exc:
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="claim_structuring_failed",
+                payload={"error": str(exc)},
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="claim_structuring_failed",
+                payload={"error": str(exc), "error_type": type(exc).__name__},
+            )
             raise HTTPException(status_code=500, detail=f"structured data generation failed: {exc}") from exc
 
 
 @router.get("/{claim_id}/structured-data/checklist")
 def validate_claim_structured_data_endpoint(
     claim_id: UUID,
-    auto_generate: bool = Query(default=False),
+    auto_generate: bool = Query(default=True),
     use_llm: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)),
@@ -537,21 +731,31 @@ def submit_doctor_verification_endpoint(
         confidence=float(verification.get("confidence") or 0.0),
     )
 
-    # Persist a final decision result derived from checklist + doctor override
-    final = decide_final(checklist_result=checklist_result, doctor_verification=verification)
+    # Persist a final decision result derived from checklist + doctor override (intelligence layer)
+    final = decide_final(
+        checklist_result=checklist_result,
+        doctor_verification=verification,
+        registry_verifications=None,
+        structured_data=verification.get("verified_data") if isinstance(verification, dict) else structured,
+    )
     decision_results_repo.deactivate_active_for_claim(db, claim_id=str(claim_id))
     decision_results_repo.insert_decision_result(
         db,
         {
             "claim_id": str(claim_id),
             "recommendation": final_status_to_decision_recommendation(final.get("final_status")),
-            "route_target": "doctor_override",
+            "route_target": str(final.get("route_target") or "doctor_override"),
             "rule_hits": "[]",
             "explanation_summary": str(final.get("reason") or ""),
             "decision_payload": json.dumps(
                 {
                     "source": final.get("source"),
                     "final_status": final.get("final_status"),
+                    "final_status_mapping": final.get("final_status_mapping"),
+                    "route_target": final.get("route_target"),
+                    "risk_score": final.get("risk_score"),
+                    "risk_breakdown": final.get("risk_breakdown"),
+                    "conflicts": final.get("conflicts"),
                     "doctor_verification_id": inserted.get("id"),
                     "doctor_verification": verification,
                     "checklist_result": checklist_result,
@@ -584,6 +788,102 @@ def get_latest_doctor_verification_endpoint(
     if row is None:
         raise HTTPException(status_code=404, detail="doctor verification not found")
     return DoctorVerificationResponse.model_validate(row)
+
+
+@router.post("/{claim_id}/auditor-verification", response_model=AuditorVerificationResponse)
+def submit_auditor_verification_endpoint(
+    claim_id: UUID,
+    payload: AuditorVerificationSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.auditor)),
+) -> AuditorVerificationResponse:
+    try:
+        _existing = get_claim(db, claim_id)
+    except ClaimNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="claim not found") from exc
+
+    auditor_decision = str(payload.auditor_decision or "").strip()
+    notes = str(payload.notes or "").strip()
+    confidence = float(payload.confidence) if payload.confidence is not None else 0.85
+
+    inserted = auditor_verifications_repo.insert_auditor_verification(
+        db,
+        claim_id=claim_id,
+        auditor_id=current_user.username,
+        auditor_decision=auditor_decision,
+        notes=notes,
+        confidence=confidence,
+    )
+
+    latest_doctor = doctor_verifications_repo.get_latest_doctor_verification(db, claim_id=claim_id)
+    doctor_ver = latest_doctor if isinstance(latest_doctor, dict) else None
+    checklist_result = doctor_ver.get("checklist_result") if doctor_ver else {}
+    structured_data = doctor_ver.get("verified_data") if doctor_ver else {}
+
+    final = decide_final(
+        checklist_result=checklist_result if isinstance(checklist_result, dict) else {},
+        doctor_verification=doctor_ver,
+        auditor_verification={
+            "auditor_decision": auditor_decision,
+            "notes": notes,
+            "confidence": confidence,
+        },
+        registry_verifications=None,
+        structured_data=structured_data if isinstance(structured_data, dict) else {},
+    )
+
+    decision_results_repo.deactivate_active_for_claim(db, claim_id=str(claim_id))
+    decision_results_repo.insert_decision_result(
+        db,
+        {
+            "claim_id": str(claim_id),
+            "recommendation": final_status_to_decision_recommendation(final.get("final_status")),
+            "route_target": str(final.get("route_target") or "auditor_override"),
+            "rule_hits": "[]",
+            "explanation_summary": str(final.get("reason") or notes),
+            "decision_payload": json.dumps(
+                {
+                    "source": final.get("source"),
+                    "final_status": final.get("final_status"),
+                    "final_status_mapping": final.get("final_status_mapping"),
+                    "route_target": final.get("route_target"),
+                    "risk_score": final.get("risk_score"),
+                    "risk_breakdown": final.get("risk_breakdown"),
+                    "conflicts": final.get("conflicts"),
+                    "auditor_verification_id": inserted.get("id"),
+                    "auditor_verification": {
+                        "auditor_id": current_user.username,
+                        "auditor_decision": auditor_decision,
+                        "notes": notes,
+                        "confidence": confidence,
+                    },
+                    "doctor_verification_id": (doctor_ver.get("id") if doctor_ver else None),
+                },
+                ensure_ascii=False,
+            ),
+            "generated_by": str(current_user.username or ""),
+        },
+    )
+    db.commit()
+
+    return AuditorVerificationResponse.model_validate(inserted)
+
+
+@router.get("/{claim_id}/auditor-verification/latest", response_model=AuditorVerificationResponse)
+def get_latest_auditor_verification_endpoint(
+    claim_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.auditor, UserRole.user, UserRole.doctor)),
+) -> AuditorVerificationResponse:
+    try:
+        _existing = get_claim(db, claim_id)
+    except ClaimNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="claim not found") from exc
+
+    row = auditor_verifications_repo.get_latest_auditor_verification(db, claim_id=claim_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="auditor verification not found")
+    return AuditorVerificationResponse.model_validate(row)
 
 
 @router.post("/{claim_id}/pipeline/run")
@@ -645,6 +945,123 @@ def run_claim_pipeline_endpoint(
     }
 
 
+def _recommendation_to_final_status(value: str) -> str:
+    v = str(value or "").strip().lower()
+    if v == "approve":
+        return "approve"
+    if v == "reject":
+        return "reject"
+    return "query"
+
+
+def _build_decide_response_from_decision_row(claim_id: UUID, row: dict) -> ClaimDecideResponse:
+    payload = row.get("decision_payload") if isinstance(row, dict) else {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    final_status = str(payload.get("final_status") or "").strip() or _recommendation_to_final_status(str(row.get("recommendation") or ""))
+    reason = str(payload.get("reason") or row.get("explanation_summary") or "").strip()
+    source = str(payload.get("source") or "unknown").strip()
+    confidence = payload.get("confidence")
+    try:
+        confidence_value = float(confidence) if confidence is not None else 0.0
+    except Exception:
+        confidence_value = 0.0
+
+    route_target = str(row.get("route_target") or payload.get("route_target") or "").strip() or None
+    final_status_mapping = str(payload.get("final_status_mapping") or "").strip() or None
+    risk_score = payload.get("risk_score")
+    risk_breakdown = payload.get("risk_breakdown") if isinstance(payload.get("risk_breakdown"), list) else []
+    conflicts = payload.get("conflicts") if isinstance(payload.get("conflicts"), list) else []
+    ml_prediction = payload.get("ml_prediction") if isinstance(payload.get("ml_prediction"), dict) else None
+
+    checklist_result = payload.get("checklist_result") if isinstance(payload.get("checklist_result"), dict) else {}
+    flags = checklist_result.get("flags") if isinstance(checklist_result.get("flags"), list) else []
+    verifications = payload.get("registry_verifications") if isinstance(payload.get("registry_verifications"), dict) else {}
+    if not verifications:
+        verifications = payload.get("verifications") if isinstance(payload.get("verifications"), dict) else {}
+
+    return ClaimDecideResponse(
+        claim_id=claim_id,
+        decision_id=(str(row.get("id") or "") or None),
+        generated_at=row.get("generated_at"),
+        final_status=final_status or "query",
+        reason=reason or "",
+        source=source or "unknown",
+        confidence=float(confidence_value),
+        route_target=route_target,
+        final_status_mapping=final_status_mapping,
+        risk_score=(float(risk_score) if risk_score is not None else None),
+        risk_breakdown=risk_breakdown,
+        conflicts=conflicts,
+        ml_prediction=ml_prediction,
+        recommendation=str(row.get("recommendation") or final_status_to_decision_recommendation(final_status)),
+        flags=flags,
+        verifications=verifications,
+    )
+
+
+def _run_claim_prepare_background(claim_id: UUID, actor_id: str, force_refresh: bool, use_llm: bool) -> None:
+    db = SessionLocal()
+    try:
+        prepare_claim_for_ai(
+            db=db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            force_refresh=bool(force_refresh),
+            use_llm=bool(use_llm),
+        )
+    except Exception as exc:
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_prepare_failed",
+            payload={"error": str(exc), "error_type": type(exc).__name__, "source": "prepare_endpoint_background"},
+        )
+    finally:
+        db.close()
+
+
+@router.post("/{claim_id}/prepare", response_model=ClaimPrepareResponse)
+def prepare_claim_for_ai_endpoint(
+    claim_id: UUID,
+    payload: ClaimPrepareRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)),
+) -> ClaimPrepareResponse:
+    try:
+        existing = get_claim(db, claim_id)
+    except ClaimNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="claim not found") from exc
+
+    if current_user.role == UserRole.doctor and not doctor_matches_assignment(existing.assigned_doctor_id, current_user.username):
+        raise HTTPException(status_code=403, detail="doctor can access only assigned claims")
+
+    actor_id = (payload.actor_id or current_user.username or "").strip() or current_user.username
+    background_tasks.add_task(
+        _run_claim_prepare_background,
+        claim_id,
+        actor_id,
+        bool(payload.force_refresh),
+        bool(payload.use_llm),
+    )
+    return ClaimPrepareResponse(
+        claim_id=claim_id,
+        queued=True,
+        lock_acquired=None,
+        extracted_documents=None,
+        structured_generated=None,
+        checklist_ran=None,
+    )
+
+
 @router.post("/{claim_id}/decide", response_model=ClaimDecideResponse)
 def run_claim_decision_endpoint(
     claim_id: UUID,
@@ -672,6 +1089,36 @@ def run_claim_decision_endpoint(
         raise HTTPException(status_code=403, detail="doctor can access only assigned claims")
 
     actor_id = (payload.actor_id or current_user.username or "").strip() or current_user.username
+    if not bool(payload.force_refresh):
+        latest_row = decision_results_repo.get_latest_decision_row_for_claim(db, claim_id)
+        if isinstance(latest_row, dict):
+            latest_generated_at = latest_row.get("generated_at")
+            if is_artifact_fresh_for_claim(
+                db,
+                claim_id=claim_id,
+                artifact_generated_at=(latest_generated_at if isinstance(latest_generated_at, datetime) else None),
+            ):
+                try_record_workflow_event(
+                    db,
+                    claim_id=claim_id,
+                    actor_id=actor_id,
+                    event_type="ai_decision_cache_hit",
+                    payload={"decision_id": str(latest_row.get("id") or "")},
+                )
+                return _build_decide_response_from_decision_row(claim_id, latest_row)
+
+    try_record_workflow_event(
+        db,
+        claim_id=claim_id,
+        actor_id=actor_id,
+        event_type="ai_decision_started",
+        payload={
+            "use_llm": bool(payload.use_llm),
+            "force_refresh": bool(payload.force_refresh),
+            "auto_advance": bool(payload.auto_advance),
+            "auto_generate_report": bool(payload.auto_generate_report),
+        },
+    )
 
     # 1. Generate structured data (if not present or force refresh)
     try:
@@ -680,6 +1127,13 @@ def run_claim_decision_endpoint(
         structured = None
 
     if structured is None or payload.force_refresh:
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_structuring_started",
+            payload={"use_llm": bool(payload.use_llm), "force_refresh": bool(payload.force_refresh), "source": "ai_decide"},
+        )
         try:
             structured = generate_claim_structured_data(
                 db=db,
@@ -688,7 +1142,31 @@ def run_claim_decision_endpoint(
                 use_llm=bool(payload.use_llm),
                 force_refresh=bool(payload.force_refresh),
             )
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="claim_structuring_completed",
+                payload={
+                    "source": (structured.get("source") if isinstance(structured, dict) else None),
+                    "confidence": (structured.get("confidence") if isinstance(structured, dict) else None),
+                },
+            )
         except ClaimStructuringError as exc:
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="claim_structuring_failed",
+                payload={"error": str(exc)},
+            )
+            try_record_workflow_event(
+                db,
+                claim_id=claim_id,
+                actor_id=actor_id,
+                event_type="ai_decision_failed",
+                payload={"error": str(exc), "stage": "structuring"},
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     structured = structured if isinstance(structured, dict) else {}
@@ -696,11 +1174,40 @@ def run_claim_decision_endpoint(
     # 2. Run checklist validation
     checklist_result = run_structured_checklist(structured)
 
-    # 3. Provider verifications (non-blocking, best-effort)
-    doctor_ver = doctor_verify(structured)
-    hospital_gst_ver = hospital_gst_verify(structured)
-    pharmacy_gst_ver = gst_verify(structured)
-    drug_license_ver = drug_license_verify(structured)
+    # 3. Provider verifications (parallel, best-effort)
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    def _safe_verify(func, *args, **kwargs):
+        """Run a verification function safely, returning error dict on failure."""
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            return {"valid": None, "status": "error", "error": str(exc)}
+
+    verification_results = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_name = {
+            executor.submit(_safe_verify, doctor_verify, structured): "doctor_ver",
+            executor.submit(_safe_verify, hospital_gst_verify, structured): "hospital_gst_ver",
+            executor.submit(_safe_verify, gst_verify, structured): "pharmacy_gst_ver",
+            executor.submit(_safe_verify, drug_license_verify, structured): "drug_license_ver",
+        }
+        done, not_done = wait(future_to_name.keys(), timeout=30)
+        for future in done:
+            var_name = future_to_name.get(future) or "unknown_ver"
+            try:
+                verification_results[var_name] = future.result()
+            except Exception as exc:
+                verification_results[var_name] = {"valid": None, "status": "error", "error": str(exc)}
+
+        for future in not_done:
+            var_name = future_to_name.get(future) or "unknown_ver"
+            verification_results[var_name] = {"valid": None, "status": "timeout", "error": "verification timed out"}
+
+    doctor_ver = verification_results["doctor_ver"]
+    hospital_gst_ver = verification_results["hospital_gst_ver"]
+    pharmacy_gst_ver = verification_results["pharmacy_gst_ver"]
+    drug_license_ver = verification_results["drug_license_ver"]
 
     doctor_valid: bool | None = None
     if isinstance(doctor_ver, dict):
@@ -771,48 +1278,135 @@ def run_claim_decision_endpoint(
         )
     checklist_result["flags"] = flags
 
-    # 5. Run decision engine (AI-only, no human doctor override)
+    # 5. Optional ML prediction (auditor > doctor > ML > AI)
+    ml_prediction_payload = {
+        "available": False,
+        "label": None,
+        "confidence": 0.0,
+        "probabilities": {},
+        "model_version": None,
+        "training_examples": 0,
+        "reason": "ml_not_run",
+    }
+    try:
+        if bool(getattr(settings, "ml_final_decision_enabled", True)):
+            ai_decision_for_ml = (
+                (checklist_result.get("ai_decision") if isinstance(checklist_result, dict) else None)
+                or (checklist_result.get("recommendation") if isinstance(checklist_result, dict) else None)
+            )
+            ai_conf_for_ml = (
+                (checklist_result.get("ai_confidence") if isinstance(checklist_result, dict) else None)
+                or (checklist_result.get("confidence") if isinstance(checklist_result, dict) else None)
+            )
+            risk_score_for_ml, _risk_breakdown = compute_risk_score(
+                checklist_result=checklist_result,
+                registry_verifications=registry_verifications,
+                structured_data=structured,
+                claim_text=None,
+            )
+            conflicts_for_ml = detect_conflicts(
+                ai_decision=str(ai_decision_for_ml or ""),
+                doctor_decision=None,
+                auditor_decision=None,
+                registry_verifications=registry_verifications,
+                risk_score=float(risk_score_for_ml),
+            )
+            conflict_count = len(conflicts_for_ml) if isinstance(conflicts_for_ml, list) else 0
+            rule_hit_count = len(flags) if isinstance(flags, list) else 0
+            amount = structured.get("claim_amount") or structured.get("bill_amount")
+            diagnosis = structured.get("diagnosis")
+            hospital = structured.get("hospital_name") or structured.get("hospital")
+
+            ml_pred = predict_final_decision(
+                db,
+                ai_decision=ai_decision_for_ml,
+                ai_confidence=ai_conf_for_ml,
+                risk_score=risk_score_for_ml,
+                conflict_count=conflict_count,
+                rule_hit_count=rule_hit_count,
+                verifications=registry_verifications,
+                amount=amount,
+                diagnosis=diagnosis,
+                hospital=hospital,
+                min_confidence=float(getattr(settings, "ml_final_decision_min_confidence", 0.75)),
+            )
+            ml_prediction_payload = ml_pred.__dict__
+        else:
+            ml_prediction_payload["reason"] = "ml_disabled"
+    except Exception as exc:
+        ml_prediction_payload = {
+            "available": False,
+            "label": None,
+            "confidence": 0.0,
+            "probabilities": {},
+            "model_version": None,
+            "training_examples": 0,
+            "reason": f"ml_error:{type(exc).__name__}",
+        }
+
+    # 6. Run decision engine (AI-only, no human doctor override)
     final = decide_final(
         checklist_result=checklist_result,
         doctor_verification=None,
         registry_verifications=registry_verifications,
+        ml_prediction=ml_prediction_payload,
+        ml_min_confidence=float(getattr(settings, "ml_final_decision_min_confidence", 0.75)),
+        structured_data=structured,
     )
 
-    # 6. Persist decision
+    # 7. Persist decision
     recommendation = final_status_to_decision_recommendation(final.get("final_status"))
-    workflow_status = _derive_workflow_from_recommendation(recommendation)
-    route_target = _default_route_target_for_workflow(workflow_status)
-    decision_results_repo.deactivate_active_for_claim(db, claim_id=str(claim_id))
-    decision_results_repo.insert_decision_result(
-        db,
-        {
-            "claim_id": str(claim_id),
-            "recommendation": recommendation,
-            "route_target": route_target,
-            "rule_hits": "[]",
-            "explanation_summary": str(final.get("reason") or ""),
-            "decision_payload": json.dumps(
-                {
-                    "source": final.get("source"),
-                    "final_status": final.get("final_status"),
-                    "checklist_result": checklist_result,
-                    "registry_verifications": registry_verifications,
-                    "registry_verification_details": {
-                        "doctor": doctor_ver,
-                        "hospital_gst": hospital_gst_ver,
-                        "pharmacy_gst": pharmacy_gst_ver,
-                        "drug_license": drug_license_ver,
+    workflow_status = str(final.get("final_status_mapping") or "") or _derive_workflow_from_recommendation(recommendation)
+    route_target = str(final.get("route_target") or "") or _default_route_target_for_workflow(workflow_status)
+    try:
+        decision_results_repo.deactivate_active_for_claim(db, claim_id=str(claim_id))
+        decision_results_repo.insert_decision_result(
+            db,
+            {
+                "claim_id": str(claim_id),
+                "recommendation": recommendation,
+                "route_target": route_target,
+                "rule_hits": "[]",
+                "explanation_summary": str(final.get("reason") or ""),
+                "decision_payload": json.dumps(
+                    {
+                        "source": final.get("source"),
+                        "final_status": final.get("final_status"),
+                        "final_status_mapping": final.get("final_status_mapping"),
+                        "route_target": route_target,
+                        "confidence": final.get("confidence"),
+                        "risk_score": final.get("risk_score"),
+                        "risk_breakdown": final.get("risk_breakdown"),
+                        "conflicts": final.get("conflicts"),
+                        "ml_prediction": final.get("ml_prediction") or ml_prediction_payload,
+                        "checklist_result": checklist_result,
+                        "registry_verifications": registry_verifications,
+                        "registry_verification_details": {
+                            "doctor": doctor_ver,
+                            "hospital_gst": hospital_gst_ver,
+                            "pharmacy_gst": pharmacy_gst_ver,
+                            "drug_license": drug_license_ver,
+                        },
+                        "structured_data_summary": {k: v for k, v in structured.items() if k != "raw_payload"},
                     },
-                    "structured_data_summary": {k: v for k, v in structured.items() if k != "raw_payload"},
-                },
-                ensure_ascii=False,
-            ),
-            "generated_by": str(actor_id),
-        },
-    )
-    db.commit()
+                    ensure_ascii=False,
+                ),
+                "generated_by": str(actor_id),
+            },
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="ai_decision_failed",
+            payload={"error": str(exc), "error_type": type(exc).__name__, "stage": "persist_decision"},
+        )
+        raise HTTPException(status_code=500, detail=f"ai decision persist failed: {exc}") from exc
 
-    # 7. Record workflow event
+    # 8. Record workflow event
     try_record_workflow_event(
         db,
         claim_id=claim_id,
@@ -829,6 +1423,25 @@ def run_claim_decision_endpoint(
             "registry_verifications": registry_verifications,
         },
     )
+
+    if bool(payload.auto_generate_report):
+        try:
+            generate_claim_report_ai_endpoint(
+                claim_id=claim_id,
+                payload=ClaimReportAIGenerateRequest(
+                    actor_id=actor_id,
+                    report_status="draft",
+                    save=True,
+                    auto_generate_structured=True,
+                    use_llm=bool(payload.use_llm),
+                    force_refresh=False,
+                ),
+                db=db,
+                current_user=current_user,
+            )
+        except Exception:
+            # Report generation is best-effort; decision must still succeed.
+            pass
 
     if bool(payload.auto_advance):
         if current_user.role == UserRole.doctor:
@@ -858,10 +1471,41 @@ def run_claim_decision_endpoint(
         reason=str(final.get("reason") or ""),
         source=str(final.get("source") or "ai_auto"),
         confidence=float(final.get("confidence", 0.0)),
+        route_target=route_target,
+        final_status_mapping=str(final.get("final_status_mapping") or workflow_status),
+        risk_score=(float(final.get("risk_score")) if final.get("risk_score") is not None else None),
+        risk_breakdown=(final.get("risk_breakdown") if isinstance(final.get("risk_breakdown"), list) else []),
+        conflicts=(final.get("conflicts") if isinstance(final.get("conflicts"), list) else []),
+        ml_prediction=(final.get("ml_prediction") if isinstance(final.get("ml_prediction"), dict) else ml_prediction_payload),
         recommendation=final_status_to_decision_recommendation(final.get("final_status")),
         flags=checklist_result.get("flags", []),
         verifications=registry_verifications,
     )
+
+
+@router.get("/{claim_id}/decide/latest", response_model=ClaimDecideResponse)
+def get_latest_decide_result_endpoint(
+    claim_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)),
+) -> ClaimDecideResponse:
+    """Fetch the latest persisted decision_results payload for a claim.
+
+    Useful when a long-running /decide request times out on the client but
+    continues executing on the server.
+    """
+    try:
+        existing = get_claim(db, claim_id)
+    except ClaimNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="claim not found") from exc
+
+    if current_user.role == UserRole.doctor and not doctor_matches_assignment(existing.assigned_doctor_id, current_user.username):
+        raise HTTPException(status_code=403, detail="doctor can access only assigned claims")
+
+    row = decision_results_repo.get_latest_decision_row_for_claim(db, claim_id)
+    if not isinstance(row, dict):
+        raise HTTPException(status_code=404, detail="no decision_result found")
+    return _build_decide_response_from_decision_row(claim_id, row)
 
 
 def _map_advance_status_to_claim_status(value: str) -> ClaimStatus | None:

@@ -1,4 +1,49 @@
 (function () {
+  // Auditor QC actions can trigger long-running server work (structuring + checklist + decide).
+  // Keep the default timeout aligned with workspace.js to avoid premature client-side aborts.
+  const DEFAULT_API_TIMEOUT_MS = 180000;
+  const AI_DECIDE_TIMEOUT_MS = 600000;  // 10 minutes (increased from 5min to handle slow LLM calls)
+
+  function isAbortError(err) {
+    if (!err) return false;
+    if (err.name === 'AbortError') return true;
+    const msg = String(err && err.message ? err.message : err);
+    return msg.toLowerCase().indexOf('abort') >= 0;
+  }
+
+  async function runWithTimeout(task, options, timeoutMs) {
+    const ms = Number(timeoutMs || DEFAULT_API_TIMEOUT_MS);
+    const canAbort = typeof AbortController === 'function' && Number.isFinite(ms) && ms > 0;
+    if (!canAbort) return await task(null);
+
+    const controller = new AbortController();
+    const originalSignal = options && options.signal ? options.signal : null;
+    if (originalSignal) {
+      if (originalSignal.aborted) controller.abort();
+      else originalSignal.addEventListener('abort', function () { controller.abort(); }, { once: true });
+    }
+
+    const timer = setTimeout(function () { controller.abort(); }, ms);
+    try {
+      return await task(controller.signal);
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error('Request timed out after ' + String(Math.max(1, Math.round(ms / 1000))) + 's');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function fetchTextWithTimeout(path, options, timeoutMs) {
+    return await runWithTimeout(async function (signal) {
+      const resp = await fetch(path, { ...(options || {}), signal: signal || undefined });
+      const raw = await resp.text();
+      return { resp: resp, raw: raw };
+    }, options, timeoutMs);
+  }
+
   function escapeHtml(value) {
     return String(value == null ? '' : value)
       .replace(/&/g, '&amp;')
@@ -29,14 +74,115 @@
     };
   }
 
+  const STORAGE_KEYS = {
+    ACCESS_TOKEN: 'qc_access_token',
+    USER: 'qc_user',
+    ACTING_ROLE: 'qc_acting_role',
+    REFRESH_USERNAME: 'qc_refresh_username',
+    REFRESH_PASSWORD: 'qc_refresh_password',
+    REDIRECT_AFTER_LOGIN: 'qc_redirect_after_login',
+  };
+
   function getToken() {
-    return localStorage.getItem('qc_access_token') || '';
+    return localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN) || '';
+  }
+
+  function saveCredentialsForAutoRefresh(username, password) {
+    try {
+      localStorage.setItem(STORAGE_KEYS.REFRESH_USERNAME, username);
+      // Store password in sessionStorage so it clears on tab close (security)
+      sessionStorage.setItem(STORAGE_KEYS.REFRESH_PASSWORD, password);
+    } catch (err) {
+      console.warn('[AuditorQC] Could not save credentials for auto-refresh:', err);
+    }
+  }
+
+  function getStoredUsername() {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.REFRESH_USERNAME) || '';
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  function getStoredPassword() {
+    try {
+      return sessionStorage.getItem(STORAGE_KEYS.REFRESH_PASSWORD) || '';
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  function clearStoredCredentials() {
+    try {
+      localStorage.removeItem(STORAGE_KEYS.REFRESH_USERNAME);
+      sessionStorage.removeItem(STORAGE_KEYS.REFRESH_PASSWORD);
+    } catch (_err) {}
+  }
+
+  function saveRedirectTarget() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.REDIRECT_AFTER_LOGIN, window.location.href);
+    } catch (_err) {}
+  }
+
+  function getAndClearRedirectTarget() {
+    try {
+      const target = localStorage.getItem(STORAGE_KEYS.REDIRECT_AFTER_LOGIN);
+      localStorage.removeItem(STORAGE_KEYS.REDIRECT_AFTER_LOGIN);
+      return target || '';
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  async function attemptAutoRefreshToken() {
+    const username = getStoredUsername();
+    const password = getStoredPassword();
+    if (!username || !password) {
+      return null;
+    }
+
+    console.log('[AuditorQC] Attempting auto token refresh...');
+    try {
+      const authResp = await fetchTextWithTimeout('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username, password: password }),
+      }, 15000);
+      const resp = authResp.resp;
+      const text = authResp.raw;
+
+      if (!resp.ok) {
+        let detail = 'Login failed';
+        try {
+          const body = JSON.parse(text);
+          detail = body.detail || text;
+        } catch (_err) {
+          detail = text;
+        }
+        console.error('[AuditorQC] Token refresh failed:', detail);
+        return null;
+      }
+
+      const body = text ? JSON.parse(text) : null;
+      localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, body.access_token);
+      localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(body.user));
+      localStorage.setItem(STORAGE_KEYS.ACTING_ROLE, body.user.role);
+      console.log('[AuditorQC] Token refreshed successfully. New expiry:', body.expires_at);
+      return body.access_token;
+    } catch (err) {
+      console.error('[AuditorQC] Token refresh request failed:', err && err.message ? err.message : String(err));
+      return null;
+    }
   }
 
   function clearAuthAndRedirect() {
-    localStorage.removeItem('qc_access_token');
-    localStorage.removeItem('qc_user');
-    localStorage.removeItem('qc_acting_role');
+    localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN);
+    localStorage.removeItem(STORAGE_KEYS.USER);
+    localStorage.removeItem(STORAGE_KEYS.ACTING_ROLE);
+    clearStoredCredentials();
+    saveRedirectTarget();
     window.location.href = '/qc/login';
   }
 
@@ -48,11 +194,15 @@
     }
 
     const opts = options || {};
+    const timeoutMs = Number(opts && opts.timeoutMs ? opts.timeoutMs : DEFAULT_API_TIMEOUT_MS);
     const headers = new Headers(opts.headers || {});
     headers.set('Authorization', 'Bearer ' + token);
 
-    const resp = await fetch(path, { ...opts, headers });
-    const raw = await resp.text();
+    const baseFetchOpts = { ...opts, headers: headers };
+    delete baseFetchOpts.timeoutMs;
+    const baseResp = await fetchTextWithTimeout(path, baseFetchOpts, timeoutMs);
+    const resp = baseResp.resp;
+    const raw = baseResp.raw;
     let body = null;
     try {
       body = raw ? JSON.parse(raw) : null;
@@ -62,6 +212,34 @@
 
     if (!resp.ok) {
       if (resp.status === 401) {
+        // Try auto-refresh token before forcing login
+        const newToken = await attemptAutoRefreshToken();
+        if (newToken) {
+          // Retry the original request with the new token
+          console.log('[AuditorQC] Retrying original request with refreshed token');
+          const retryHeaders = new Headers(opts.headers || {});
+          retryHeaders.set('Authorization', 'Bearer ' + newToken);
+          const retryFetchOpts = { ...opts, headers: retryHeaders };
+          delete retryFetchOpts.timeoutMs;
+          const retryResult = await fetchTextWithTimeout(path, retryFetchOpts, timeoutMs);
+          const retryResp = retryResult.resp;
+          const retryRaw = retryResult.raw;
+          let retryBody = null;
+          try {
+            retryBody = retryRaw ? JSON.parse(retryRaw) : null;
+          } catch (_err) {
+            retryBody = { detail: retryRaw };
+          }
+          if (!retryResp.ok) {
+            // Refresh succeeded but retry still failed — force login
+            clearAuthAndRedirect();
+            const detail = retryBody && (retryBody.detail || retryBody.message) ? (retryBody.detail || retryBody.message) : ('HTTP ' + retryResp.status);
+            throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+          }
+          return retryBody || {};
+        }
+
+        // Auto-refresh failed — force login
         clearAuthAndRedirect();
       }
       const detail = body && (body.detail || body.message) ? (body.detail || body.message) : ('HTTP ' + resp.status);
@@ -94,6 +272,8 @@
   const runRulesBtn = document.getElementById('qc-run-rules-btn');
   const generateConclusionBtn = document.getElementById('qc-generate-conclusion-btn');
   const runDecideBtn = document.getElementById('qc-run-decide-btn');
+  const brainRunBtn = document.getElementById('qc-brain-run-btn');
+  const auditorVerifyBtn = document.getElementById('qc-auditor-submit-btn');
   const applyConclusionBtn = document.getElementById('qc-apply-conclusion-btn');
   const saveBtn = document.getElementById('qc-save-btn');
   const saveMarkBtn = document.getElementById('qc-save-mark-btn');
@@ -103,6 +283,13 @@
   const conclusionOnlyEl = document.getElementById('qc-conclusion-only');
   const layoutEl = document.getElementById('qc-layout');
   const splitterEl = document.getElementById('qc-splitter');
+  const aiProgressDetailsEl = document.getElementById('qc-ai-progress');
+  const aiProgressStatusEl = document.getElementById('qc-ai-progress-status');
+  const aiProgressRefreshBtn = document.getElementById('qc-ai-progress-refresh');
+  const aiProgressCopyBtn = document.getElementById('qc-ai-progress-copy');
+  const aiProgressClearBtn = document.getElementById('qc-ai-progress-clear');
+  const aiProgressLogEl = document.getElementById('qc-ai-progress-log');
+  const aiProgressEventsEl = document.getElementById('qc-ai-progress-events');
 
   let loadedSource = 'doctor';
   let currentDocs = [];
@@ -114,6 +301,128 @@
   const SPLIT_MAX_PERCENT = 70;
   const CLAIM_SYNC_STORAGE_KEY = 'qc_claim_refresh_signal';
   const CLAIM_SYNC_CHANNEL = 'qc_claim_events';
+
+  function createAiProgressView() {
+    const maxLines = 1000;
+    const lines = [];
+    const seenEventIds = new Set();
+    let pollTimer = null;
+
+    function stamp() {
+      const dt = new Date();
+      return dt.toLocaleTimeString();
+    }
+
+    function ensureOpen() {
+      try {
+        if (aiProgressDetailsEl) aiProgressDetailsEl.open = true;
+      } catch (_err) {}
+    }
+
+    function setStatus(text) {
+      if (!aiProgressStatusEl) return;
+      aiProgressStatusEl.textContent = text || '';
+    }
+
+    function clear() {
+      lines.splice(0, lines.length);
+      seenEventIds.clear();
+      if (aiProgressLogEl) aiProgressLogEl.textContent = '';
+      if (aiProgressEventsEl) aiProgressEventsEl.innerHTML = '<li class="muted-small">No events loaded yet.</li>';
+    }
+
+    function log(text) {
+      const line = '[' + stamp() + '] ' + String(text || '');
+      lines.push(line);
+      if (lines.length > maxLines) lines.splice(0, lines.length - maxLines);
+      if (aiProgressLogEl) {
+        aiProgressLogEl.textContent = lines.join('\n') + '\n';
+        aiProgressLogEl.scrollTop = aiProgressLogEl.scrollHeight;
+      }
+    }
+
+    async function refreshEvents() {
+      if (!aiProgressEventsEl) return;
+      try {
+        const payload = await apiFetch('/api/v1/workflow-events/claims/' + encodeURIComponent(params.claimUuid) + '?limit=80&offset=0', { timeoutMs: 15000 });
+        const items = Array.isArray(payload && payload.items) ? payload.items : [];
+        const ordered = items.slice().reverse(); // oldest → newest
+        if (!ordered.length) {
+          aiProgressEventsEl.innerHTML = '<li class="muted-small">No events found for this claim yet.</li>';
+          return;
+        }
+
+        const tail = ordered.slice(Math.max(0, ordered.length - 30));
+        aiProgressEventsEl.innerHTML = tail.map(function (evt) {
+          const when = evt && evt.occurred_at ? String(evt.occurred_at) : '';
+          const type = evt && evt.event_type ? String(evt.event_type) : 'event';
+          const actor = evt && evt.actor_id ? String(evt.actor_id) : '';
+          const payloadObj = evt && evt.event_payload ? evt.event_payload : null;
+          let payloadText = '';
+          try {
+            if (payloadObj && typeof payloadObj === 'object') {
+              const compact = JSON.stringify(payloadObj);
+              payloadText = compact.length > 180 ? (compact.slice(0, 180) + '…') : compact;
+            }
+          } catch (_err) {}
+          return '<li><span class="muted-small">' + escapeHtml(when || '') + '</span>'
+            + ' — <strong>' + escapeHtml(type) + '</strong>'
+            + (actor ? (' <span class="muted-small">(actor: ' + escapeHtml(actor) + ')</span>') : '')
+            + (payloadText ? ('<div class="muted-small">' + escapeHtml(payloadText) + '</div>') : '')
+            + '</li>';
+        }).join('');
+
+        ordered.forEach(function (evt) {
+          const id = String(evt && evt.id != null ? evt.id : '').trim();
+          if (!id || seenEventIds.has(id)) return;
+          seenEventIds.add(id);
+          const type = evt && evt.event_type ? String(evt.event_type) : 'event';
+          log('server_event: ' + type);
+        });
+      } catch (err) {
+        log('server_event_refresh_failed: ' + String(err && err.message ? err.message : err));
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = window.setInterval(function () { refreshEvents(); }, 4000);
+    }
+
+    function stopPolling() {
+      if (!pollTimer) return;
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    async function copyLogs() {
+      const txt = lines.join('\n');
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(txt);
+          log('copied_logs_to_clipboard');
+          return;
+        }
+      } catch (_err) {}
+      window.prompt('Copy logs:', txt);
+    }
+
+    return {
+      ensureOpen: ensureOpen,
+      setStatus: setStatus,
+      clear: clear,
+      log: log,
+      refreshEvents: refreshEvents,
+      startPolling: startPolling,
+      stopPolling: stopPolling,
+      copyLogs: copyLogs,
+    };
+  }
+
+  const aiProgress = createAiProgressView();
+  if (aiProgressRefreshBtn) aiProgressRefreshBtn.addEventListener('click', function () { aiProgress.ensureOpen(); aiProgress.refreshEvents(); });
+  if (aiProgressCopyBtn) aiProgressCopyBtn.addEventListener('click', function () { aiProgress.ensureOpen(); aiProgress.copyLogs(); });
+  if (aiProgressClearBtn) aiProgressClearBtn.addEventListener('click', function () { aiProgress.clear(); aiProgress.setStatus('Idle'); });
 
   function broadcastClaimSync(type, payload) {
     const msg = { type: type || 'claim-status-updated', ...(payload || {}) };
@@ -163,18 +472,52 @@
     const confirmed = window.confirm('Run AI decision for this claim now? This may take some time.');
     if (!confirmed) return;
 
+    const startedAt = Date.now();
+    aiProgress.ensureOpen();
+    aiProgress.clear();
+    aiProgress.setStatus('Running /decide…');
+    aiProgress.log('Starting AI decide for claim_uuid=' + params.claimUuid + ' (timeout=' + String(Math.round(AI_DECIDE_TIMEOUT_MS / 1000)) + 's).');
+    aiProgress.startPolling();
+    aiProgress.refreshEvents();
     setBusy(true);
-    setMessage('', 'Running AI decision (/decide)...');
+    setMessage('', 'Running AI decision (/decide)... this can take a few minutes.');
     try {
+      try {
+        await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/prepare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          timeoutMs: 20000,
+          body: JSON.stringify({ use_llm: true, force_refresh: false }),
+        });
+        aiProgress.log('Claim prepare queued.');
+      } catch (prepareErr) {
+        aiProgress.log('Claim prepare skipped: ' + String(prepareErr && prepareErr.message ? prepareErr.message : prepareErr));
+      }
+
       const decision = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/decide', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        timeoutMs: AI_DECIDE_TIMEOUT_MS,
         body: JSON.stringify({
           use_llm: true,
           force_refresh: false,
           auto_advance: true,
+          auto_generate_report: false,
         }),
       });
+      aiProgress.log('AI decide request completed. Fetching latest checklist + claim status…');
+
+      let checklistLatest = null;
+      try {
+        checklistLatest = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/checklist/latest');
+      } catch (_err) {
+        checklistLatest = null;
+      }
+
+      try {
+        renderBrainPanel(decision, checklistLatest);
+      } catch (_err) {
+      }
 
       let statusText = '';
       try {
@@ -192,8 +535,126 @@
       const confText = (conf != null) ? (' | confidence: ' + String(conf)) : '';
 
       setMessage('ok', 'AI decide done: ' + (rec || finalStatus || 'ok') + confText + statusText);
+      aiProgress.setStatus('Completed');
+      aiProgress.log('AI decide completed: ' + String(rec || finalStatus || 'ok') + confText + statusText);
+      aiProgress.refreshEvents();
     } catch (err) {
-      setMessage('err', (err && err.message) ? err.message : 'AI decide failed.');
+      const msg = (err && err.message) ? err.message : 'AI decide failed.';
+      setMessage('err', msg);
+      aiProgress.log('AI decide error: ' + String(msg));
+      if (String(msg).toLowerCase().indexOf('timed out') >= 0) {
+        // The server may still finish and persist the decision_result.
+        try {
+          setMessage('', 'AI decide still running on server. Waiting for result...');
+          aiProgress.setStatus('Timed out locally; polling /decide/latest…');
+          aiProgress.log('Timed out locally. Polling /decide/latest for up to ~10 minutes.');
+          const maxAttempts = 60; // ~10 minutes at 10s interval
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const latest = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/decide/latest', { timeoutMs: 15000 });
+            const generatedAt = latest && latest.generated_at ? Date.parse(String(latest.generated_at)) : NaN;
+            if (!Number.isNaN(generatedAt) && generatedAt >= (startedAt - 5000)) {
+              aiProgress.log('Loaded latest decision_result from server.');
+              let checklistLatest = null;
+              try {
+                checklistLatest = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/checklist/latest');
+              } catch (_err) {
+                checklistLatest = null;
+              }
+              try {
+                renderBrainPanel(latest, checklistLatest);
+              } catch (_err) {
+              }
+              setMessage('ok', 'Loaded latest AI result from server (after timeout).');
+              aiProgress.setStatus('Completed (after timeout)');
+              aiProgress.refreshEvents();
+              break;
+            }
+            aiProgress.log('Waiting… attempt ' + String(attempt + 1) + '/' + String(maxAttempts));
+            await new Promise(function (resolve) { window.setTimeout(resolve, 10000); });
+          }
+        } catch (_err) {
+          // keep original timeout error
+        }
+      }
+    } finally {
+      setBusy(false);
+      aiProgress.stopPolling();
+    }
+  }
+
+  function renderBrainPanel(decideResp, checklistLatest) {
+    const panel = document.getElementById('qc-brain-panel');
+    if (!panel) return;
+
+    const statusEl = document.getElementById('qc-brain-status');
+    const finalDecisionEl = document.getElementById('qc-brain-final-decision');
+    const aiDecisionEl = document.getElementById('qc-brain-ai-decision');
+    const confidenceEl = document.getElementById('qc-brain-confidence');
+    const aiConfidenceEl = document.getElementById('qc-brain-ai-confidence');
+    const riskEl = document.getElementById('qc-brain-risk-score');
+    const routeEl = document.getElementById('qc-brain-route');
+    const conflictsEl = document.getElementById('qc-brain-conflicts');
+
+    const finalDecision = decideResp && decideResp.final_status ? String(decideResp.final_status) : '';
+    const route = decideResp && decideResp.route_target ? String(decideResp.route_target) : '';
+    const confidence = decideResp && typeof decideResp.confidence === 'number' ? decideResp.confidence : null;
+    const riskScore = decideResp && typeof decideResp.risk_score === 'number' ? decideResp.risk_score : null;
+    const conflicts = decideResp && Array.isArray(decideResp.conflicts) ? decideResp.conflicts : [];
+
+    const aiDecision = checklistLatest && checklistLatest.ai_decision ? String(checklistLatest.ai_decision) : '';
+    const aiConfidence = checklistLatest && typeof checklistLatest.ai_confidence === 'number' ? checklistLatest.ai_confidence : null;
+    const mlPred = decideResp && decideResp.ml_prediction && typeof decideResp.ml_prediction === 'object' ? decideResp.ml_prediction : null;
+    const mlAvailable = !!(mlPred && (mlPred.available === true));
+    const mlLabel = mlPred && mlPred.label ? String(mlPred.label) : '';
+    const mlConf = mlPred && typeof mlPred.confidence === 'number' ? mlPred.confidence : null;
+
+    if (statusEl) {
+      const mapping = decideResp && decideResp.final_status_mapping ? String(decideResp.final_status_mapping) : '';
+      const mlText = mlAvailable
+        ? (' | ML: ' + (mlLabel || 'available') + (mlConf != null ? (' (' + String(mlConf) + ')') : ''))
+        : ' | ML: not available';
+      statusEl.textContent = (mapping ? ('Latest mapping: ' + mapping) : 'AI decide completed.') + mlText;
+    }
+    if (finalDecisionEl) finalDecisionEl.textContent = finalDecision || '-';
+    if (aiDecisionEl) aiDecisionEl.textContent = aiDecision || '-';
+    if (confidenceEl) confidenceEl.textContent = (confidence != null) ? String(confidence) : '-';
+    if (aiConfidenceEl) aiConfidenceEl.textContent = (aiConfidence != null) ? String(aiConfidence) : '-';
+    if (riskEl) riskEl.textContent = (riskScore != null) ? String(riskScore) : '-';
+    if (routeEl) routeEl.textContent = route || '-';
+
+    if (conflictsEl) {
+      if (!conflicts.length) {
+        conflictsEl.innerHTML = '<li class="muted-small">No conflicts detected.</li>';
+      } else {
+        conflictsEl.innerHTML = conflicts.slice(0, 12).map(function (c) {
+          const msg = c && c.message ? String(c.message) : JSON.stringify(c);
+          return '<li>' + escapeHtml(msg) + '</li>';
+        }).join('');
+      }
+    }
+  }
+
+  async function submitAuditorVerification() {
+    const actionEl = document.getElementById('qc-auditor-action');
+    const noteEl = document.getElementById('qc-auditor-note');
+    const act = String(actionEl ? actionEl.value : '').trim().toLowerCase();
+    const note = String(noteEl ? noteEl.value : '').trim();
+    if (!/^(approve|reject|query)$/.test(act)) {
+      setMessage('err', 'Select a valid auditor action.');
+      return;
+    }
+
+    setBusy(true);
+    setMessage('', 'Submitting auditor decision...');
+    try {
+      await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/auditor-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auditor_decision: act, notes: note, confidence: 0.9 }),
+      });
+      setMessage('ok', 'Auditor decision submitted: ' + act + '.');
+    } catch (err) {
+      setMessage('err', (err && err.message) ? err.message : 'Auditor decision submit failed.');
     } finally {
       setBusy(false);
     }
@@ -344,7 +805,7 @@
     }
 
     return '<div style="max-width:1100px;margin:0 auto;background:#fff;color:#111;padding:16px;">'
-      + '<h1 style="margin:0 0 10px 0;text-align:center;font-size:42px;line-height:1.2;font-weight:800;">HEALTH CLAIM INVESTIGATION REPORT</h1>'
+      + '<h1 style="margin:0 0 10px 0;text-align:center;font-size:42px;line-height:1.2;font-weight:800;">HEALTH CLAIM ASSESSMENT SHEET</h1>'
       + '<div style="text-align:right;color:#333;margin:0 0 12px 0;font-size:14px;">Generated: ' + escapeHtml(generatedAt) + ' | Doctor: -</div>'
       + '<table style="width:100%;border-collapse:collapse;table-layout:fixed;">'
       + row('COMPANY NAME', payload.company_name)
@@ -370,22 +831,13 @@
   }
 
   async function loadStructuredFallbackReport() {
+    // Fastest + most reliable fallback: fetch basic claim metadata first so we can
+    // render something even if structuring is slow/down.
+    let baseClaimPayload = null;
     try {
-      const data = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/structured-data?auto_generate=true&use_llm=true');
-      if (data && typeof data === 'object') return data;
-    } catch (_err) {
-    }
-
-    try {
-      const data = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/structured-data?auto_generate=true&use_llm=false');
-      if (data && typeof data === 'object') return data;
-    } catch (_err2) {
-    }
-
-    try {
-      const claim = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid));
+      const claim = await apiFetch('/api/v1/claims/' + encodeURIComponent(params.claimUuid), { timeoutMs: 8000 });
       if (claim && typeof claim === 'object') {
-        return {
+        baseClaimPayload = {
           external_claim_id: claim.external_claim_id || params.claimId,
           insured_name: claim.patient_name || '',
           company_name: 'Medi Assist Insurance TPA Pvt. Ltd.',
@@ -406,10 +858,48 @@
           recommendation: '',
         };
       }
-    } catch (_err3) {
+    } catch (err) {
+      console.error('[AuditorQC] Claim data fetch failed:', err && err.message ? err.message : String(err));
     }
 
-    return null;
+    // Best path: use existing structured data (no auto-generate) so we don't block
+    // the auditor UI on slow OCR/LLM pipelines.
+    try {
+      const data = await apiFetch(
+        '/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/structured-data?auto_generate=false',
+        { timeoutMs: 8000 }
+      );
+      if (data && typeof data === 'object') return data;
+    } catch (err) {
+      // If structured data is missing and we at least have claim metadata, return
+      // immediately so the UI doesn't look stuck.
+      if (baseClaimPayload) return baseClaimPayload;
+      console.error('[AuditorQC] Structured data fetch failed:', err && err.message ? err.message : String(err));
+    }
+
+    // Next: try generating structured data without LLM (usually much faster).
+    try {
+      const data = await apiFetch(
+        '/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/structured-data?auto_generate=true&use_llm=false',
+        { timeoutMs: 12000 }
+      );
+      if (data && typeof data === 'object') return data;
+    } catch (err) {
+      console.error('[AuditorQC] Structured data fallback (no LLM) failed:', err && err.message ? err.message : String(err));
+    }
+
+    // Last resort: try LLM structuring (can be slow).
+    try {
+      const data = await apiFetch(
+        '/api/v1/claims/' + encodeURIComponent(params.claimUuid) + '/structured-data?auto_generate=true&use_llm=true',
+        { timeoutMs: 20000 }
+      );
+      if (data && typeof data === 'object') return data;
+    } catch (err) {
+      console.error('[AuditorQC] Structured data fallback (LLM) failed:', err && err.message ? err.message : String(err));
+    }
+
+    return baseClaimPayload;
   }
 
   if (claimMetaEl) {
@@ -572,8 +1062,12 @@
     if (reportEditorEl) reportEditorEl.innerHTML = '<p class="muted">Loading report...</p>';
     // The backend latest-html endpoint already falls back doctor→system→any.
     // Avoid spamming 404s in logs by calling it once.
+    let apiError = null;
     try {
-      const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=doctor');
+      const payload = await apiFetch(
+        '/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=doctor',
+        { timeoutMs: 15000 }
+      );
       const html = String(payload && payload.report_html ? payload.report_html : '').trim();
       if (html) {
         loadedSource = String(payload.report_source || 'doctor').toLowerCase();
@@ -582,7 +1076,9 @@
         syncConclusionOnlyFromReport();
         return;
       }
-    } catch (_err) {
+    } catch (err) {
+      apiError = err && err.message ? err.message : String(err);
+      console.error('[AuditorQC] Failed to load report HTML:', apiError);
     }
 
     const structuredFallback = await loadStructuredFallbackReport();
@@ -591,14 +1087,23 @@
       if (reportSourceEl) reportSourceEl.textContent = 'loaded source: structured';
       reportEditorEl.innerHTML = buildStructuredFallbackReportHtml(structuredFallback);
       syncConclusionOnlyFromReport();
-      setMessage('', 'No saved report found. Auto-built report from extracted data. Please review and click Save HTML.');
+      const warnMsg = apiError
+        ? 'Auto-built report from extracted data (API load failed: ' + apiError + '). Please review and click Save HTML.'
+        : 'No saved report found. Auto-built report from extracted data. Please review and click Save HTML.';
+      setMessage('', warnMsg);
       return;
     }
 
     loadedSource = 'doctor';
     if (reportSourceEl) reportSourceEl.textContent = 'loaded source: none';
-    reportEditorEl.innerHTML = '<p class="muted">No saved report HTML found. You can paste/edit and save.</p>';
+    const errorMsg = apiError
+      ? 'Failed to load report: ' + apiError + '. You can paste/edit and save.'
+      : 'No saved report HTML found. You can paste/edit and save.';
+    reportEditorEl.innerHTML = '<p class="muted">' + escapeHtml(errorMsg) + '</p>';
     syncConclusionOnlyFromReport();
+    if (apiError) {
+      setMessage('err', 'Report load failed: ' + apiError);
+    }
   }
 
   function getActorId() {
@@ -969,6 +1474,16 @@
       await runAiDecide();
     });
   }
+  if (brainRunBtn) {
+    brainRunBtn.addEventListener('click', async function () {
+      await runAiDecide();
+    });
+  }
+  if (auditorVerifyBtn) {
+    auditorVerifyBtn.addEventListener('click', async function () {
+      await submitAuditorVerification();
+    });
+  }
 
   if (applyConclusionBtn) {
     applyConclusionBtn.addEventListener('click', function () {
@@ -1065,6 +1580,55 @@
 
   initPanelSplitter();
 
+  // Check if user was redirected from login page after token expiry
+  const redirectTarget = getAndClearRedirectTarget();
+  if (redirectTarget && redirectTarget !== window.location.href) {
+    // User just came back from login — show a helpful message
+    console.log('[AuditorQC] User returned from login, resuming work...');
+  }
+
+  // Proactive token expiry check
+  function checkTokenExpiryAndRefresh() {
+    const token = getToken();
+    if (!token) return;
+
+    // Decode JWT to check expiry
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return;
+      const payload = JSON.parse(atob(parts[1]));
+      const exp = payload.exp;
+      if (!exp) return;
+
+      const now = Math.floor(Date.now() / 1000);
+      const timeUntilExpiry = exp - now;
+
+      // If token expires in less than 5 minutes, auto-refresh
+      if (timeUntilExpiry < 300 && timeUntilExpiry > 0) {
+        console.log('[AuditorQC] Token expires in', Math.round(timeUntilExpiry), 'seconds — auto-refreshing');
+        attemptAutoRefreshToken().then(function(newToken) {
+          if (newToken) {
+            setMessage('ok', 'Token refreshed automatically. Continuing session...');
+            setTimeout(function() { setMessage('ok', 'Ready.'); }, 3000);
+          }
+        });
+      } else if (timeUntilExpiry <= 0) {
+        console.log('[AuditorQC] Token already expired — attempting auto-refresh');
+        attemptAutoRefreshToken().then(function(newToken) {
+          if (!newToken) {
+            setMessage('err', 'Session expired. Please log in again.');
+            clearAuthAndRedirect();
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('[AuditorQC] Could not decode token for expiry check:', err);
+    }
+  }
+
+  // Check token on page load
+  checkTokenExpiryAndRefresh();
+
   Promise.all([loadReportHtml(), loadDocuments()]).then(function () {
     updateFullscreenButtonLabel();
     setMessage('ok', 'Ready.');
@@ -1072,14 +1636,3 @@
     setMessage('err', err && err.message ? err.message : 'Failed to load review workspace.');
   });
 })();
-
-
-
-
-
-
-
-
-
-
-

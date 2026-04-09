@@ -257,11 +257,20 @@ def _apply_edits(
         if isinstance(value, list) and canon == "medicines":
             cleaned_list = [_clean_text(str(m)) for m in value if _clean_text(str(m))]
             for tk in target_keys:
-                out[tk] = cleaned_list
+                if tk == "medicine_used":
+                    # medicine_used is always a string in the database; join with newlines
+                    out[tk] = "\n".join(cleaned_list) if cleaned_list else ""
+                else:
+                    out[tk] = cleaned_list
         elif isinstance(value, str):
             cleaned = _clean_text(value)
             for tk in target_keys:
-                out[tk] = cleaned
+                if tk == "medicines" and "medicines" in out and isinstance(out.get("medicines"), list):
+                    # If editing as string but target is the medicines list field,
+                    # split on newlines/semicolons for consistency with checklist coercion
+                    out[tk] = [p.strip() for p in re.split(r"[\n;]+", cleaned) if p.strip()]
+                else:
+                    out[tk] = cleaned
         else:
             for tk in target_keys:
                 out[tk] = value

@@ -24,3 +24,6 @@ paddleocr>=2.7.0
 numpy>=1.24.0
 torch>=2.0.0
 pytesseract>=0.3.10
+
+# ML (final decision RandomForest + artifact I/O)
+scikit-learn>=1.3.0

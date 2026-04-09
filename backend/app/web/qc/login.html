@@ -293,7 +293,27 @@
       localStorage.setItem("qc_access_token", result.access_token);
       localStorage.setItem("qc_user", JSON.stringify(result.user));
       localStorage.setItem("qc_acting_role", result.user.role);
-      window.location.href = roleLanding(result.user.role);
+
+      // Save credentials for auto token refresh
+      localStorage.setItem("qc_refresh_username", username);
+      sessionStorage.setItem("qc_refresh_password", password);
+
+      // Check if there's a saved redirect target (e.g., auditor QC page)
+      let redirectUrl = roleLanding(result.user.role);
+      try {
+        const savedRedirect = localStorage.getItem("qc_redirect_after_login");
+        if (savedRedirect) {
+          localStorage.removeItem("qc_redirect_after_login");
+          // Only redirect if it's a QC page URL (security check)
+          if (savedRedirect.startsWith(window.location.origin) || savedRedirect.startsWith("/qc/")) {
+            redirectUrl = savedRedirect;
+          }
+        }
+      } catch (e) {
+        // Ignore redirect errors, use default landing
+      }
+
+      window.location.href = redirectUrl;
     } catch (err) {
       showError(err.message || "Invalid credentials.");
     } finally {

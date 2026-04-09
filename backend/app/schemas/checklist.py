@@ -33,6 +33,8 @@ class ChecklistRunResponse(BaseModel):
     claim_id: UUID
     decision_result_id: UUID
     recommendation: str
+    ai_decision: str | None = None
+    ai_confidence: float | None = None
     route_target: str
     manual_review_required: bool
     review_priority: int
@@ -46,6 +48,8 @@ class ChecklistLatestResponse(BaseModel):
     claim_id: UUID
     decision_result_id: UUID | None = None
     recommendation: str | None = None
+    ai_decision: str | None = None
+    ai_confidence: float | None = None
     route_target: str | None = None
     manual_review_required: bool | None = None
     review_priority: int | None = None

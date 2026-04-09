@@ -437,9 +437,11 @@ def _coerce_structured_input(raw: Any) -> dict[str, Any]:
     if meds is None:
         meds = raw.get("medicine_used")
     if isinstance(meds, list):
-        out["medicines"] = [str(m) for m in meds]
+        out["medicines"] = [str(m).strip() for m in meds if str(m).strip()]
     elif isinstance(meds, str):
-        parts = [p.strip() for p in re.split(r"[\n,;]+", meds) if p.strip()]
+        # Split on newlines and semicolons only — NOT commas.
+        # Medicine names commonly contain commas (e.g. "Cefoperazone, Sulbactam").
+        parts = [p.strip() for p in re.split(r"[\n;]+", meds) if p.strip()]
         out["medicines"] = parts
     else:
         out["medicines"] = []

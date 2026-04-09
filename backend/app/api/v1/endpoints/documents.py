@@ -1,11 +1,11 @@
 import mimetypes
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps.auth import require_roles
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.schemas.auth import UserRole
 from app.schemas.document import (
     DocumentBulkDeleteRequest,
@@ -29,9 +29,33 @@ from app.domain.documents.documents_use_cases import (
 )
 from app.dependencies.access_control import doctor_can_access_claim, doctor_can_access_document
 from app.domain.auth.service import AuthenticatedUser
+from app.domain.claims.events import try_record_workflow_event
 from app.infrastructure.storage.storage_service import StorageConfigError, StorageOperationError
+from app.workflows.prepare_flow import prepare_claim_for_ai
 
 router = APIRouter(tags=["documents"])
+
+
+def _run_claim_prepare_background(claim_id: UUID, actor_id: str) -> None:
+    db = SessionLocal()
+    try:
+        prepare_claim_for_ai(
+            db=db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            force_refresh=False,
+            use_llm=True,
+        )
+    except Exception as exc:
+        try_record_workflow_event(
+            db,
+            claim_id=claim_id,
+            actor_id=actor_id,
+            event_type="claim_prepare_failed",
+            payload={"error": str(exc), "error_type": type(exc).__name__, "source": "document_upload_background"},
+        )
+    finally:
+        db.close()
 
 
 @router.post(
@@ -41,10 +65,12 @@ router = APIRouter(tags=["documents"])
 )
 async def upload_document_endpoint(
     claim_id: UUID,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     uploaded_by: str | None = Form(default=None),
     retention_class: str = Form(default="standard"),
     compression_mode: str = Form(default="lossy"),
+    auto_prepare_ai: bool = Form(default=True),
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user)),
 ) -> DocumentResponse:
@@ -56,7 +82,7 @@ async def upload_document_endpoint(
     mime_type = file.content_type or guessed_mime_type or "application/octet-stream"
 
     try:
-        return create_document(
+        created = create_document(
             db=db,
             claim_id=claim_id,
             file_name=file.filename or "document",
@@ -66,6 +92,9 @@ async def upload_document_endpoint(
             retention_class=retention_class,
             compression_mode=compression_mode,
         )
+        if bool(auto_prepare_ai) and background_tasks is not None:
+            background_tasks.add_task(_run_claim_prepare_background, claim_id, uploaded_by or current_user.username)
+        return created
     except ClaimNotFoundError as exc:
         raise HTTPException(status_code=404, detail="claim not found") from exc
     except StorageConfigError as exc:
@@ -81,10 +110,12 @@ async def upload_document_endpoint(
 )
 async def upload_merged_document_endpoint(
     claim_id: UUID,
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     uploaded_by: str | None = Form(default=None),
     retention_class: str = Form(default="standard"),
     compression_mode: str = Form(default="lossy"),
+    auto_prepare_ai: bool = Form(default=True),
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user)),
 ) -> DocumentMergeUploadResponse:
@@ -118,7 +149,7 @@ async def upload_merged_document_endpoint(
             retention_class=retention_class,
             compression_mode=compression_mode,
         )
-        return DocumentMergeUploadResponse(
+        response = DocumentMergeUploadResponse(
             document=document,
             source_file_count=len(file_items),
             accepted_file_count=len(accepted_files),
@@ -130,6 +161,9 @@ async def upload_merged_document_endpoint(
             merged_saved_size_bytes=saved_size_bytes,
             merge_compression_ratio=compression_ratio,
         )
+        if bool(auto_prepare_ai) and background_tasks is not None:
+            background_tasks.add_task(_run_claim_prepare_background, claim_id, uploaded_by or current_user.username)
+        return response
     except ClaimNotFoundError as exc:
         raise HTTPException(status_code=404, detail="claim not found") from exc
     except DocumentMergeError as exc:
@@ -217,4 +251,3 @@ def get_document_download_url_endpoint(
         raise HTTPException(status_code=500, detail=f"storage config error: {exc}") from exc
     except StorageOperationError as exc:
         raise HTTPException(status_code=502, detail=f"storage operation error: {exc}") from exc
-

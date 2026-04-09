@@ -101,8 +101,11 @@ def update_parse_status(db: Session, document_id: str, parse_status: str) -> Non
         text(
             """
             UPDATE claim_documents
-            SET parse_status = :parse_status,
-                parsed_at = CASE WHEN :parse_status = 'succeeded' THEN NOW() ELSE parsed_at END
+            SET parse_status = CAST(:parse_status AS parse_status),
+                parsed_at = CASE
+                    WHEN CAST(:parse_status AS parse_status) IN ('succeeded'::parse_status, 'failed'::parse_status) THEN NOW()
+                    ELSE parsed_at
+                END
             WHERE id = :id
             """
         ),
@@ -445,8 +448,11 @@ def update_parse_status_returning_row(
         text(
             """
             UPDATE claim_documents
-            SET parse_status = :parse_status,
-                parsed_at = CASE WHEN :parse_status = 'succeeded' THEN NOW() ELSE parsed_at END
+            SET parse_status = CAST(:parse_status AS parse_status),
+                parsed_at = CASE
+                    WHEN CAST(:parse_status AS parse_status) IN ('succeeded'::parse_status, 'failed'::parse_status) THEN NOW()
+                    ELSE parsed_at
+                END
             WHERE id = :document_id
             RETURNING
                 id,

@@ -18,6 +18,11 @@ _ec2_sync/
 _github_publish_staging/
 _git_*/
 
+# ML artifacts
+ml/model.pkl
+ml/model.meta.json
+artifacts/
+
 .venv/
 .env/
 __pycache__/

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS claims (
     priority SMALLINT NOT NULL DEFAULT 3,
     source_channel VARCHAR(100),
     tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -352,6 +353,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_logs_created_at ON auth_logs(created_at DESC
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_claims_status_created_at ON claims(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_claims_completed_at ON claims(completed_at);
 CREATE INDEX IF NOT EXISTS idx_claim_documents_claim_id ON claim_documents(claim_id);
 CREATE INDEX IF NOT EXISTS idx_document_extractions_claim_id ON document_extractions(claim_id);
 CREATE INDEX IF NOT EXISTS idx_decision_results_claim_generated_at ON decision_results(claim_id, generated_at DESC);
@@ -407,4 +409,3 @@ BEFORE UPDATE ON medicine_component_lookup
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 CREATE INDEX IF NOT EXISTS idx_user_bank_details_user_id ON user_bank_details(user_id);
-

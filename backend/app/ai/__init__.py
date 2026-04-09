@@ -10,6 +10,12 @@ from app.ai.openai_responses import OpenAIResponsesError, extract_responses_text
 
 # Subpackages
 from app.ai.audit import run_openai_merged_medical_audit
+from app.ai.deepseek_reasoning import (
+    DeepSeekReasoningConfigError,
+    DeepSeekReasoningError,
+    DeepSeekReasoningProcessingError,
+    run_deepseek_reasoning,
+)
 from app.ai.extraction import ExtractionConfigError, ExtractionProcessingError, run_extraction
 from app.ai.grammar import GrammarCheckError, grammar_check_report_html
 from app.ai.structuring import (
@@ -44,6 +50,11 @@ __all__ = [
     "ClaimStructuredDataNotFoundError",
     # Audit
     "run_openai_merged_medical_audit",
+    # DeepSeek reasoning
+    "run_deepseek_reasoning",
+    "DeepSeekReasoningError",
+    "DeepSeekReasoningConfigError",
+    "DeepSeekReasoningProcessingError",
     # Conclusion
     "generate_ai_medico_legal_conclusion",
 ]

@@ -1,4 +1,46 @@
 (function () {
+  const DEFAULT_API_TIMEOUT_MS = 180000;
+
+  function isAbortError(err) {
+    if (!err) return false;
+    if (err.name === "AbortError") return true;
+    const msg = String(err && err.message ? err.message : err);
+    return msg.toLowerCase().indexOf("abort") >= 0;
+  }
+
+  async function runWithTimeout(task, options, timeoutMs) {
+    const ms = Number(timeoutMs || DEFAULT_API_TIMEOUT_MS);
+    const canAbort = typeof AbortController === "function" && Number.isFinite(ms) && ms > 0;
+    if (!canAbort) return await task(null);
+
+    const controller = new AbortController();
+    const originalSignal = options && options.signal ? options.signal : null;
+    if (originalSignal) {
+      if (originalSignal.aborted) controller.abort();
+      else originalSignal.addEventListener("abort", function () { controller.abort(); }, { once: true });
+    }
+
+    const timer = setTimeout(function () { controller.abort(); }, ms);
+    try {
+      return await task(controller.signal);
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error("Request timed out after " + String(Math.max(1, Math.round(ms / 1000))) + "s");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function fetchTextWithTimeout(path, options, timeoutMs) {
+    return await runWithTimeout(async function (signal) {
+      const resp = await fetch(path, { ...(options || {}), signal: signal || undefined });
+      const raw = await resp.text();
+      return { resp: resp, raw: raw };
+    }, options, timeoutMs);
+  }
+
   const ROLE_LABELS = { super_admin: "Super Admin", doctor: "Doctor", user: "User", auditor: "Auditor" };
   const NAV = {
     super_admin: [
@@ -342,11 +384,15 @@
       throw new Error("Not authenticated");
     }
     const opts = options || {};
+    const timeoutMs = Number(opts && opts.timeoutMs ? opts.timeoutMs : DEFAULT_API_TIMEOUT_MS);
     const headers = new Headers(opts.headers || {});
     headers.set("Authorization", "Bearer " + token);
 
-    const resp = await fetch(path, { ...opts, headers });
-    const raw = await resp.text();
+    const fetchOpts = { ...opts, headers };
+    delete fetchOpts.timeoutMs;
+    const result = await fetchTextWithTimeout(path, fetchOpts, timeoutMs);
+    const resp = result.resp;
+    const raw = result.raw;
     let body = null;
     try {
       body = raw ? JSON.parse(raw) : null;
@@ -368,17 +414,32 @@
     return body;
   }
 
-    async function apiFetchFile(path) {
+    async function apiFetchFile(path, options) {
     const token = getToken();
     if (!token) {
       clearAuthAndRedirect();
       throw new Error("Not authenticated");
     }
-    const resp = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+    const opts = options || {};
+    const timeoutMs = Number(opts && opts.timeoutMs ? opts.timeoutMs : Math.max(DEFAULT_API_TIMEOUT_MS, 600000));  // Default 10min timeout for AI operations
+    const headers = new Headers(opts.headers || {});
+    headers.set("Authorization", "Bearer " + token);
+    const fetchOpts = { ...opts, headers };
+    delete fetchOpts.timeoutMs;
+    const fileResult = await runWithTimeout(async function (signal) {
+      const resp = await fetch(path, { ...fetchOpts, signal: signal || undefined });
+      if (!resp.ok) {
+        const raw = await resp.text();
+        return { resp: resp, raw: raw, blob: null };
+      }
+      const blob = await resp.blob();
+      return { resp: resp, raw: "", blob: blob };
+    }, fetchOpts, timeoutMs);
+
+    const resp = fileResult.resp;
     if (!resp.ok) {
       if (resp.status === 401) clearAuthAndRedirect();
-      const raw = await resp.text();
-      throw new Error(raw || ("HTTP " + resp.status));
+      throw new Error((fileResult.raw || "") || ("HTTP " + resp.status));
     }
 
     const contentDisposition = String(resp.headers.get('Content-Disposition') || '');
@@ -392,9 +453,8 @@
       }
     }
 
-    const blob = await resp.blob();
     return {
-      blob: blob,
+      blob: fileResult.blob,
       filename: filename,
       contentType: String(resp.headers.get('Content-Type') || ''),
     };
@@ -1606,15 +1666,33 @@
     const preferOpenAI = !!opts.preferOpenAI;
     const strictOpenAI = !!opts.strictOpenAI;
     const extractionProviderRaw = String(opts.extractionProvider || 'openai').trim().toLowerCase();
-    const extractionProvider = ['openai'].includes(extractionProviderRaw)
+    const extractionProvider = ['auto', 'openai', 'local', 'aws_textract', 'hybrid_local'].includes(extractionProviderRaw)
       ? extractionProviderRaw
       : 'openai';
-    const extractionProviderLabel = extractionProvider === 'openai' ? 'VerifAI' : extractionProvider;
-    const allowAutoFallback = false;
+    const extractionProviderLabel = extractionProvider === 'openai'
+      ? 'VerifAI'
+      : (extractionProvider === 'aws_textract' ? 'AWS Textract' : extractionProvider);
+    const allowAutoFallback = opts.allowAutoFallback !== false;
     const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : function () {};
     const onLog = typeof opts.onLog === 'function' ? opts.onLog : function () {};
     const batchThresholdBytes = Number(opts.batchThresholdBytes || (8 * 1024 * 1024));
     const batchSize = Math.max(1, Number(opts.batchSize || 4));
+    let openaiDisabledForBatch = false;
+
+    function shouldDisableOpenAIBatchFallback(err) {
+      const msg = String(err && err.message ? err.message : err).toLowerCase();
+      if (!msg) return false;
+      if (msg.indexOf('openai_api_key') >= 0) return true;
+      if (msg.indexOf('unauthorized') >= 0 || msg.indexOf('forbidden') >= 0) return true;
+      if (msg.indexOf('invalid api key') >= 0 || msg.indexOf('invalid_api_key') >= 0) return true;
+      if (msg.indexOf('name or service not known') >= 0) return true;
+      if (msg.indexOf('enotfound') >= 0) return true;
+      if (msg.indexOf('failed to establish a new connection') >= 0) return true;
+      if (msg.indexOf('connection') >= 0 && msg.indexOf('openai') >= 0) return true;
+      if (msg.indexOf('timed out') >= 0 && msg.indexOf('openai') >= 0) return true;
+      if (msg.indexOf('openai extraction failed') >= 0) return true;
+      return false;
+    }
 
     const docsResult = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/documents?limit=200&offset=0');
     const docs = Array.isArray(docsResult && docsResult.items) ? docsResult.items : [];
@@ -1623,6 +1701,19 @@
     let skippedCount = 0;
     let failedCount = 0;
     let processedCount = 0;
+
+    function emitProgress(stage, docName, extra) {
+      try {
+        onProgress(processedCount, docs.length, docName, {
+          stage: stage,
+          extractedCount: extractedCount,
+          skippedCount: skippedCount,
+          failedCount: failedCount,
+          ...(extra || {}),
+        });
+      } catch (_err) {
+      }
+    }
 
     onLog('Found ' + String(docs.length) + ' documents for processing.');
     onLog('Extraction mode: provider=' + extractionProviderLabel + ', files > ' + formatBytes(batchThresholdBytes) + ' run in single mode, others run in batches of ' + String(batchSize) + ', auto fallback=' + (allowAutoFallback ? 'enabled' : 'disabled') + '.');
@@ -1635,11 +1726,12 @@
       if (!docId) return;
 
       processedCount += 1;
-      onProgress(processedCount, docs.length, docName);
+      emitProgress('doc_start', docName, { document_id: docId, size_bytes: sizeBytes });
 
       if (isKycIdentityDocName(docName)) {
         skippedCount += 1;
         onLog('Skipped KYC/ID document from clinical extraction: ' + docName);
+        emitProgress('doc_done', docName, { document_id: docId, result: 'skipped_kyc' });
         return;
       }
 
@@ -1654,14 +1746,16 @@
           if (alreadyExtracted) {
             skippedCount += 1;
             onLog('Skipped existing extraction: ' + docName);
+            emitProgress('doc_done', docName, { document_id: docId, result: 'skipped_existing' });
             return;
           }
         }
 
         let extracted = false;
         let lastError = null;
+        let extractedProvider = '';
 
-        if (extractionProvider !== 'auto') {
+        if (extractionProvider !== 'auto' && !(allowAutoFallback && openaiDisabledForBatch && extractionProvider === 'openai')) {
           try {
             const extractionResult = await apiFetch('/api/v1/documents/' + encodeURIComponent(docId) + '/extract', {
               method: 'POST',
@@ -1669,19 +1763,30 @@
               body: JSON.stringify({ provider: extractionProvider, actor_id: actorId, force_refresh: !!force }),
             });
             extracted = true;
+            extractedProvider = extractionProvider;
             const fallbackMeta = extractionResult
               && extractionResult.raw_response
-              && extractionResult.raw_response.openai_rate_limit_fallback
-              ? extractionResult.raw_response.openai_rate_limit_fallback
+              && (extractionResult.raw_response.openai_rate_limit_fallback || extractionResult.raw_response.openai_fallback)
+              ? (extractionResult.raw_response.openai_rate_limit_fallback || extractionResult.raw_response.openai_fallback)
               : null;
             if (fallbackMeta) {
-              onLog('OpenAI rate-limited; extracted with ' + String(fallbackMeta.used_fallback_provider || 'fallback') + ': ' + docName);
+              const reason = String(fallbackMeta.reason || '').trim();
+              const usedProvider = String(fallbackMeta.used_fallback_provider || 'fallback');
+              if (reason) {
+                onLog('OpenAI unavailable (' + reason + '); extracted with ' + usedProvider + ': ' + docName);
+              } else {
+                onLog('OpenAI fallback; extracted with ' + usedProvider + ': ' + docName);
+              }
             } else {
               onLog('Extracted with ' + extractionProviderLabel + ': ' + docName);
             }
           } catch (err) {
             lastError = err;
             onLog(extractionProviderLabel + ' extraction failed for: ' + docName + ' (' + String(err && err.message ? err.message : err) + ')');
+            if (allowAutoFallback && extractionProvider === 'openai' && !openaiDisabledForBatch && shouldDisableOpenAIBatchFallback(err)) {
+              openaiDisabledForBatch = true;
+              onLog('VerifAI seems unavailable in this environment; switching remaining documents to auto extraction fallback.');
+            }
           }
         }
 
@@ -1693,6 +1798,7 @@
               body: JSON.stringify({ provider: 'openai', actor_id: actorId, force_refresh: !!force }),
             });
             extracted = true;
+            extractedProvider = 'openai';
             onLog('Extracted with VerifAI: ' + docName);
             if (openaiExtract && openaiExtract.raw_response) {
               const rawJson = JSON.stringify(openaiExtract.raw_response);
@@ -1716,6 +1822,7 @@
               body: JSON.stringify({ provider: 'auto', actor_id: actorId, force_refresh: !!force }),
             });
             extracted = true;
+            extractedProvider = 'auto';
             onLog('Extracted with auto pipeline: ' + docName);
           } catch (err) {
             lastError = err;
@@ -1724,13 +1831,16 @@
 
         if (extracted) {
           extractedCount += 1;
+          emitProgress('doc_done', docName, { document_id: docId, result: 'extracted', provider: extractedProvider || extractionProvider });
         } else {
           failedCount += 1;
           onLog('Extraction failed: ' + docName + ' (' + String(lastError && lastError.message ? lastError.message : lastError) + ')');
+          emitProgress('doc_done', docName, { document_id: docId, result: 'failed', error: String(lastError && lastError.message ? lastError.message : lastError) });
         }
       } catch (err) {
         failedCount += 1;
         onLog('Processing failed: ' + docName + ' (' + String(err && err.message ? err.message : err) + ')');
+        emitProgress('doc_done', docName, { document_id: docId, result: 'failed', error: String(err && err.message ? err.message : err) });
       }
     }
 
@@ -1765,12 +1875,20 @@
     let checklist = null;
     let checklistError = null;
     try {
+      emitProgress('checklist_start', 'Checklist evaluation', {});
+      try {
+        await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/structured-data?auto_generate=true&use_llm=true');
+        onLog('Structured AI data ready (diagnosis extracted).');
+      } catch (_err) {
+        // Non-blocking: checklist endpoint also auto-generates structured data server-side.
+      }
       checklist = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/checklist/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actor_id: actorId, force_source_refresh: !!force }),
       });
       onLog('Checklist evaluation completed. Recommendation: ' + String((checklist && checklist.recommendation) || 'unknown'));
+      emitProgress('checklist_done', 'Checklist evaluation', { recommendation: checklist && checklist.recommendation ? String(checklist.recommendation) : '' });
       const mergedReviewMeta = checklist && checklist.source_summary && checklist.source_summary.openai_merged_review
         ? checklist.source_summary.openai_merged_review
         : null;
@@ -1786,8 +1904,10 @@
     } catch (err) {
       checklistError = err;
       onLog('Checklist evaluation failed: ' + String(err && err.message ? err.message : err));
+      emitProgress('checklist_failed', 'Checklist evaluation', { error: String(err && err.message ? err.message : err) });
     }
 
+    emitProgress('pipeline_done', 'AI batch pipeline', {});
     return {
       docsTotal: docs.length,
       extractedCount,
@@ -2077,6 +2197,34 @@
       + '</div></div>'
       + '<p id="case-detail-msg"></p>'
       + '<div class="table-wrap claim-status-table-wrap"><table><tbody id="case-detail-summary"></tbody></table></div>'
+      + '<section class="brain-panel" id="case-brain-panel" aria-label="AI brain output">'
+      + '<div class="brain-panel__head">'
+      + '<div><h3 class="brain-panel__title">AI Brain</h3><div class="muted-small" id="case-brain-status">Run AI to generate decision + risk + conflicts.</div></div>'
+      + '<div class="brain-panel__actions"><button type="button" class="soft" id="case-brain-run-btn">Run AI</button></div>'
+      + '</div>'
+      + '<div class="brain-grid">'
+      + '<div class="brain-cell"><div class="brain-k">Final Decision</div><div class="brain-v" id="case-brain-final-decision">-</div></div>'
+      + '<div class="brain-cell"><div class="brain-k">AI Decision</div><div class="brain-v" id="case-brain-ai-decision">-</div></div>'
+      + '<div class="brain-cell"><div class="brain-k">Confidence</div><div class="brain-v" id="case-brain-confidence">-</div></div>'
+      + '<div class="brain-cell"><div class="brain-k">AI Confidence</div><div class="brain-v" id="case-brain-ai-confidence">-</div></div>'
+      + '<div class="brain-cell"><div class="brain-k">Risk Score</div><div class="brain-v" id="case-brain-risk-score">-</div></div>'
+      + '<div class="brain-cell"><div class="brain-k">Route</div><div class="brain-v" id="case-brain-route">-</div></div>'
+      + '</div>'
+      + '<div class="brain-conflicts"><div class="brain-k">Conflicts</div><ul class="brain-list" id="case-brain-conflicts"><li class="muted-small">None yet.</li></ul></div>'
+      + (activeRouteRole === 'doctor' || activeRouteRole === 'super_admin'
+        ? (
+          '<div class="brain-submit">'
+          + '<h4 class="brain-subtitle">Doctor Decision</h4>'
+          + '<div class="case-review-panel">'
+          + '<div class="case-review-row"><label class="case-review-label" for="case-doctor-action">Action</label>'
+          + '<select id="case-doctor-action"><option value="approve">Approve</option><option value="reject">Reject</option><option value="query" selected>Query</option></select></div>'
+          + '<div class="case-review-row"><label class="case-review-label" for="case-doctor-note">Note</label>'
+          + '<textarea id="case-doctor-note" rows="3" placeholder="Doctor note (optional)"></textarea></div>'
+          + '<div class="link-row case-review-actions"><button type="button" id="case-doctor-submit-btn">Submit Doctor Decision</button></div>'
+          + '</div></div>'
+        )
+        : '')
+      + '</section>'
       + (canSubmitReview
         ? (
           '<h3 style="margin-top:16px;">Reviewer Decision</h3>'
@@ -2101,6 +2249,7 @@
         : '')
       + '<h3 style="margin-top:16px;">Case Documents</h3>'
       + '<div class="link-row case-detail-actions">'
+      + '<button type="button" class="btn-soft" id="case-run-ai-decide">Run AI Decide</button>'
       + '<button type="button" id="case-analyze-ai">Analyze Admission Need (VerifAI)</button>'
       + '<button type="button" class="btn-soft" id="case-force-ai">Force VerifAI Analyzer</button>'
       + '<button type="button" class="btn-soft" id="case-diagnosis-checklist">Generate Diagnosis Checklist</button>'
@@ -2135,6 +2284,7 @@
     const fullReportBodyEl = document.getElementById('case-report-full-body');
 
     const analyzeBtn = document.getElementById('case-analyze-ai');
+    const runDecideBtn = document.getElementById('case-run-ai-decide');
     const forceBtn = document.getElementById('case-force-ai');
     const diagnosisChecklistBtn = document.getElementById('case-diagnosis-checklist');
     const diagnosisChecklistResultEl = document.getElementById('case-diagnosis-checklist-result');
@@ -2147,7 +2297,12 @@
     const reviewActionEl = document.getElementById('case-review-action');
     const reviewNoteEl = document.getElementById('case-review-note');
     const reviewSubmitBtn = document.getElementById('case-review-submit');
-    const actionButtons = [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn, sendBackBtn, reviewSubmitBtn].filter(Boolean);
+    const brainRunBtn = document.getElementById('case-brain-run-btn');
+    const doctorActionEl = document.getElementById('case-doctor-action');
+    const doctorNoteEl = document.getElementById('case-doctor-note');
+    const doctorSubmitBtn = document.getElementById('case-doctor-submit-btn');
+
+    const actionButtons = [runDecideBtn, analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn, sendBackBtn, reviewSubmitBtn, brainRunBtn, doctorSubmitBtn].filter(Boolean);
 
     if (isAuditorRole) {
       [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn].forEach(function (btn) {
@@ -2167,6 +2322,167 @@
         logEl.textContent += '\n' + line;
       }
       logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function renderCaseBrain(decideResp, checklistLatest) {
+      const statusEl = document.getElementById('case-brain-status');
+      const finalDecisionEl = document.getElementById('case-brain-final-decision');
+      const aiDecisionEl = document.getElementById('case-brain-ai-decision');
+      const confidenceEl = document.getElementById('case-brain-confidence');
+      const aiConfidenceEl = document.getElementById('case-brain-ai-confidence');
+      const riskEl = document.getElementById('case-brain-risk-score');
+      const routeEl = document.getElementById('case-brain-route');
+      const conflictsEl = document.getElementById('case-brain-conflicts');
+
+      if (!finalDecisionEl && !statusEl) return;
+
+      const finalDecision = decideResp && decideResp.final_status ? String(decideResp.final_status) : '';
+      const route = decideResp && decideResp.route_target ? String(decideResp.route_target) : '';
+      const confidence = decideResp && typeof decideResp.confidence === 'number' ? decideResp.confidence : null;
+      const riskScore = decideResp && typeof decideResp.risk_score === 'number' ? decideResp.risk_score : null;
+      const conflicts = decideResp && Array.isArray(decideResp.conflicts) ? decideResp.conflicts : [];
+
+      const aiDecision = checklistLatest && checklistLatest.ai_decision ? String(checklistLatest.ai_decision) : '';
+      const aiConfidence = checklistLatest && typeof checklistLatest.ai_confidence === 'number' ? checklistLatest.ai_confidence : null;
+      const mlPred = decideResp && decideResp.ml_prediction && typeof decideResp.ml_prediction === 'object' ? decideResp.ml_prediction : null;
+      const mlAvailable = !!(mlPred && (mlPred.available === true));
+      const mlLabel = mlPred && mlPred.label ? String(mlPred.label) : '';
+      const mlConf = mlPred && typeof mlPred.confidence === 'number' ? mlPred.confidence : null;
+
+      if (statusEl) {
+        const mapping = decideResp && decideResp.final_status_mapping ? String(decideResp.final_status_mapping) : '';
+        const mlText = mlAvailable
+          ? (' | ML: ' + (mlLabel || 'available') + (mlConf != null ? (' (' + String(mlConf) + ')') : ''))
+          : ' | ML: not available';
+        statusEl.textContent = (mapping ? ('Latest mapping: ' + mapping) : 'AI decide completed.') + mlText;
+      }
+      if (finalDecisionEl) finalDecisionEl.textContent = finalDecision || '-';
+      if (aiDecisionEl) aiDecisionEl.textContent = aiDecision || '-';
+      if (confidenceEl) confidenceEl.textContent = (confidence != null) ? String(confidence) : '-';
+      if (aiConfidenceEl) aiConfidenceEl.textContent = (aiConfidence != null) ? String(aiConfidence) : '-';
+      if (riskEl) riskEl.textContent = (riskScore != null) ? String(riskScore) : '-';
+      if (routeEl) routeEl.textContent = route || '-';
+
+      if (conflictsEl) {
+        if (!conflicts.length) {
+          conflictsEl.innerHTML = '<li class="muted-small">No conflicts detected.</li>';
+        } else {
+          conflictsEl.innerHTML = conflicts.slice(0, 12).map(function (c) {
+            const msg = c && c.message ? String(c.message) : JSON.stringify(c);
+            return '<li>' + escapeHtml(msg) + '</li>';
+          }).join('');
+        }
+      }
+    }
+
+    async function runCaseAiDecide() {
+      const confirmed = window.confirm('Run AI decision for this claim now? This may take some time.');
+      if (!confirmed) return;
+
+      const startedAt = Date.now();
+      setActionDisabled(true);
+      setMessage('case-detail-msg', '', 'Running AI decision (/decide)... this can take a few minutes.');
+      appendLog('AI decide started.');
+      try {
+        try {
+          await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/prepare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            timeoutMs: 20000,
+            body: JSON.stringify({ use_llm: true, force_refresh: false }),
+          });
+          appendLog('Claim prepare queued.');
+        } catch (prepareErr) {
+          appendLog('Claim prepare skipped: ' + String(prepareErr && prepareErr.message ? prepareErr.message : prepareErr));
+        }
+
+        const decision = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/decide', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          timeoutMs: 600000,  // 10 minutes (increased from 5min to handle slow LLM calls)
+          body: JSON.stringify({
+            use_llm: true,
+            force_refresh: false,
+            auto_advance: false,
+            auto_generate_report: false,
+          }),
+        });
+
+        let checklistLatest = null;
+        try {
+          checklistLatest = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/checklist/latest');
+        } catch (_err) {
+          checklistLatest = null;
+        }
+
+        renderCaseBrain(decision, checklistLatest);
+        setMessage('case-detail-msg', 'ok', 'AI decide done: ' + String((decision && (decision.recommendation || decision.final_status)) || 'ok') + '.');
+        appendLog('AI decide completed.');
+      } catch (err) {
+        const msg = err && err.message ? err.message : 'AI decide failed.';
+        setMessage('case-detail-msg', 'err', msg);
+        appendLog('AI decide failed: ' + String(msg));
+        if (String(msg).toLowerCase().indexOf('timed out') >= 0) {
+          try {
+            setMessage('case-detail-msg', '', 'AI decide still running on server. Waiting for result...');
+            const maxAttempts = 60; // ~10 minutes at 10s interval
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+              const latest = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/decide/latest', { timeoutMs: 15000 });
+              const generatedAt = latest && latest.generated_at ? Date.parse(String(latest.generated_at)) : NaN;
+              if (!Number.isNaN(generatedAt) && generatedAt >= (startedAt - 5000)) {
+                let checklistLatest = null;
+                try {
+                  checklistLatest = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/checklist/latest');
+                } catch (_err) {
+                  checklistLatest = null;
+                }
+                renderCaseBrain(latest, checklistLatest);
+                setMessage('case-detail-msg', 'ok', 'Loaded latest AI result from server (after timeout).');
+                appendLog('Loaded latest AI result after timeout.');
+                break;
+              }
+              await new Promise(function (resolve) { window.setTimeout(resolve, 10000); });
+            }
+          } catch (_err) {
+          }
+        }
+      } finally {
+        setActionDisabled(false);
+      }
+    }
+
+    async function submitDoctorVerification() {
+      if (!doctorSubmitBtn) return;
+      const act = String(doctorActionEl ? doctorActionEl.value : '').trim().toLowerCase();
+      const note = String(doctorNoteEl ? doctorNoteEl.value : '').trim();
+      if (!/^(approve|reject|query)$/.test(act)) {
+        setMessage('case-detail-msg', 'err', 'Select a valid doctor action.');
+        return;
+      }
+
+      setActionDisabled(true);
+      setMessage('case-detail-msg', '', 'Submitting doctor decision...');
+      appendLog('Doctor decision submit started: ' + act);
+      try {
+        await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/doctor-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            doctor_decision: act,
+            notes: note,
+            edited_fields: {},
+            auto_generate_structured: false,
+            use_llm: false,
+          }),
+        });
+        setMessage('case-detail-msg', 'ok', 'Doctor decision submitted: ' + act + '.');
+        appendLog('Doctor decision submitted.');
+      } catch (err) {
+        setMessage('case-detail-msg', 'err', err && err.message ? err.message : 'Doctor decision submit failed.');
+        appendLog('Doctor decision submit failed: ' + String(err && err.message ? err.message : err));
+      } finally {
+        setActionDisabled(false);
+      }
     }
 
     function setActionDisabled(disabled) {
@@ -2269,7 +2585,7 @@
         const diagnosis = sanitizeReportText((structured && structured.diagnosis) || '');
         if (diagnosis && diagnosis !== '-') return diagnosis;
       } catch (_err) {
-        // ignore and fallback to manual input
+        // ignore and let the caller handle missing diagnosis without prompting the user
       }
       return '';
     }
@@ -2282,11 +2598,8 @@
       try {
         let diagnosisText = await resolveDiagnosisForChecklist();
         if (!diagnosisText) {
-          diagnosisText = String(window.prompt('Enter diagnosis for checklist generation:', '') || '').trim();
-        }
-        if (!diagnosisText) {
-          setMessage('case-detail-msg', 'err', 'Diagnosis is required for checklist generation.');
-          appendLog('Diagnosis checklist generation skipped: diagnosis missing.');
+          setMessage('case-detail-msg', 'err', 'Diagnosis could not be auto-generated for checklist generation.');
+          appendLog('Diagnosis checklist generation skipped: diagnosis missing after auto-generation.');
           return;
         }
 
@@ -4909,6 +5222,22 @@
       await runPipelineAction(true, true, 'Force VerifAI Analyzer', true, { extractionProvider: 'openai', allowAutoFallback: false });
     });
 
+    if (runDecideBtn) {
+      runDecideBtn.addEventListener('click', async function () {
+        await runCaseAiDecide();
+      });
+    }
+    if (brainRunBtn) {
+      brainRunBtn.addEventListener('click', async function () {
+        await runCaseAiDecide();
+      });
+    }
+    if (doctorSubmitBtn) {
+      doctorSubmitBtn.addEventListener('click', async function () {
+        await submitDoctorVerification();
+      });
+    }
+
     if (diagnosisChecklistBtn) {
       diagnosisChecklistBtn.addEventListener('click', async function () {
         await runDiagnosisChecklistGeneration();
@@ -4941,6 +5270,12 @@
             appendLog('Latest checklist decision refreshed: ' + String(latestChecklist.recommendation || 'unknown'));
           }
           appendLog('Running fresh checklist evaluation for report conclusion...');
+          try {
+            await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/structured-data?auto_generate=true&use_llm=true');
+            appendLog('Structured AI data ready (diagnosis extracted) for checklist.');
+          } catch (_err) {
+            // Non-blocking: checklist endpoint also auto-generates structured data server-side.
+          }
           const evaluatedChecklist = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/checklist/evaluate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4964,23 +5299,78 @@
 
         if ((coverage.missingDocs || []).length > 0) {
           const missing = Number((coverage.missingDocs || []).length || 0);
-          const msg = 'Please generate response first. Missing AI response for ' + String(missing) + ' document(s). Click Analyze Admission Need (AI) first.';
-          setMessage('case-detail-msg', 'err', msg);
-          appendLog(msg);
-          renderReportLoadingTab(reportTab, 'Please generate response first.', formatElapsedClock(Date.now() - startedAt));
+          appendLog('Missing AI response for ' + String(missing) + ' document(s). Auto-running extraction pipeline...');
+          setMessage('case-detail-msg', '', 'Running AI extraction for ' + String(missing) + ' missing document(s)...');
+          stageText = 'Running AI extraction for missing documents...';
+          renderProgress();
+
           try {
-            if (reportTab && !reportTab.closed) reportTab.close();
-          } catch (_err) {
-            // ignore
+            await runCasePreparationPipeline(
+              claimUuid,
+              (me && me.username) ? me.username : 'doctor-ui',
+              { force: false, extractionProvider: 'aws_textract', allowAutoFallback: false }
+            );
+            appendLog('Auto-extraction completed. Re-checking coverage...');
+
+            // Re-check coverage after auto-extraction
+            const recheck = await checkExistingExtractionCoverage(docsForCoverage, function (index, total, fileName) {
+              stageText = 'Verifying extraction: ' + String(index) + '/' + String(total);
+              renderProgress();
+            });
+            appendLog('Post-extraction coverage: ' + String(recheck.withExtractionCount) + '/' + String(recheck.eligibleCount) + ' clinical document(s).');
+
+            if ((recheck.missingDocs || []).length > 0) {
+              const stillMissing = Number((recheck.missingDocs || []).length || 0);
+              const msg = 'Extraction completed but ' + String(stillMissing) + ' document(s) still missing AI response. You may need to retry or check document quality.';
+              setMessage('case-detail-msg', 'err', msg);
+              appendLog(msg);
+              renderReportLoadingTab(reportTab, 'Extraction incomplete.', formatElapsedClock(Date.now() - startedAt));
+              try {
+                if (reportTab && !reportTab.closed) reportTab.close();
+              } catch (_err) {}
+              return;
+            }
+          } catch (extractErr) {
+            const errMsg = 'Auto-extraction failed: ' + String(extractErr && extractErr.message ? extractErr.message : extractErr);
+            setMessage('case-detail-msg', 'err', errMsg);
+            appendLog(errMsg);
+            renderReportLoadingTab(reportTab, 'Extraction failed.', formatElapsedClock(Date.now() - startedAt));
+            try {
+              if (reportTab && !reportTab.closed) reportTab.close();
+            } catch (_err) {}
+            return;
           }
-          return;
         }
 
         appendLog('Existing AI response found for all clinical documents. Reusing extraction data for report.');
 
-        stageText = 'Generating report from existing AI response...';
+        stageText = 'Generating AI report...';
         renderProgress();
-        latestGeneratedReportHtml = await buildLegacyReportHtmlFromLatestData();
+        let reportSavedByServer = false;
+        try {
+          const aiReport = await apiFetch('/api/v1/claims/' + encodeURIComponent(claimUuid) + '/reports/ai-generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              report_status: 'draft',
+              save: true,
+              auto_generate_structured: true,
+              use_llm: true,
+              force_refresh: false,
+            }),
+          });
+          latestGeneratedReportHtml = String(aiReport && aiReport.report_html ? aiReport.report_html : '').trim();
+          reportSavedByServer = !!(aiReport && aiReport.saved);
+          if (aiReport && aiReport.saved_version_no) {
+            appendLog('AI report saved (system). Version: ' + String(aiReport.saved_version_no) + '.');
+          } else {
+            appendLog('AI report generated (not saved).');
+          }
+        } catch (aiErr) {
+          appendLog('AI report generator failed; falling back to legacy report builder. Error: ' + String(aiErr && aiErr.message ? aiErr.message : aiErr));
+          latestGeneratedReportHtml = await buildLegacyReportHtmlFromLatestData();
+          reportSavedByServer = false;
+        }
         if (!String(latestGeneratedReportHtml || '').trim()) {
           appendLog('Generated report HTML was empty. Falling back to template report.');
           latestGeneratedReportHtml = buildLegacyReportHtml(
@@ -4996,9 +5386,12 @@
 
         renderGeneratedReport();
 
-        stageText = 'Saving report...';
-        renderProgress();
-        await saveCurrentReportToDb('system', { silent: true, manageBusy: false });
+        // AI generator endpoint saves the system report. Legacy builder still requires save.
+        if (!reportSavedByServer) {
+          stageText = 'Saving report...';
+          renderProgress();
+          await saveCurrentReportToDb('system', { silent: true, manageBusy: false });
+        }
 
         const finalHtml = String(getCurrentReportHtml() || latestGeneratedReportHtml || '').trim();
         const opened = openReportInBrowserTab(finalHtml, reportTab || null);
@@ -5599,6 +5992,159 @@
       const claimKey = String(claimUuid || '').trim();
       if (!claimKey) return;
 
+      function openAiBatchProgressModal() {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'modal-backdrop open';
+        backdrop.innerHTML = ''
+          + '<div class="modal-card wide" role="dialog" aria-modal="true" aria-labelledby="ai-progress-title">'
+          + '<div class="ai-progress-modal">'
+          + '<div class="modal-header">'
+          + '<h3 id="ai-progress-title">AI Batch Progress</h3>'
+          + '<button type="button" class="btn-soft" id="ai-progress-close">Close</button>'
+          + '</div>'
+          + '<p class="muted" id="ai-progress-subtitle">Claim UUID: ' + escapeHtml(claimKey) + '</p>'
+          + '<div class="ai-progress-kpis">'
+          + '<div class="ai-progress-kpi"><div class="k">Processed</div><div class="v" id="ai-progress-processed">0/0</div></div>'
+          + '<div class="ai-progress-kpi"><div class="k">Extracted</div><div class="v" id="ai-progress-extracted">0</div></div>'
+          + '<div class="ai-progress-kpi"><div class="k">Skipped</div><div class="v" id="ai-progress-skipped">0</div></div>'
+          + '<div class="ai-progress-kpi"><div class="k">Failed</div><div class="v" id="ai-progress-failed">0</div></div>'
+          + '</div>'
+          + '<div class="ai-progress-meta">'
+          + '<div style="flex: 1 1 360px;">'
+          + '<div class="ai-progress-bar" aria-hidden="true"><div class="ai-progress-bar__fill" id="ai-progress-fill"></div></div>'
+          + '<p class="muted" id="ai-progress-stage" style="margin-top: 8px;">Starting…</p>'
+          + '</div>'
+          + '<div class="link-row" style="margin: 0;">'
+          + '<button type="button" class="btn-soft" id="ai-progress-copy">Copy logs</button>'
+          + '<button type="button" class="btn-soft" id="ai-progress-refresh-events">Refresh events</button>'
+          + '</div>'
+          + '</div>'
+          + '<pre class="ai-progress-log" id="ai-progress-log"></pre>'
+          + '<p class="muted" style="margin: 0;">Tip: This view shows both client pipeline logs and server workflow events (document_extraction_failed, claim_checklist_evaluated, etc.).</p>'
+          + '</div>'
+          + '</div>';
+        document.body.appendChild(backdrop);
+
+        const closeBtn = backdrop.querySelector('#ai-progress-close');
+        const copyBtn = backdrop.querySelector('#ai-progress-copy');
+        const refreshBtn = backdrop.querySelector('#ai-progress-refresh-events');
+        const processedEl = backdrop.querySelector('#ai-progress-processed');
+        const extractedEl = backdrop.querySelector('#ai-progress-extracted');
+        const skippedEl = backdrop.querySelector('#ai-progress-skipped');
+        const failedEl = backdrop.querySelector('#ai-progress-failed');
+        const fillEl = backdrop.querySelector('#ai-progress-fill');
+        const stageEl = backdrop.querySelector('#ai-progress-stage');
+        const logEl = backdrop.querySelector('#ai-progress-log');
+
+        const maxLines = 1400;
+        const lines = [];
+        const seenEventIds = new Set();
+
+        function nowStamp() {
+          const dt = new Date();
+          return dt.toLocaleTimeString();
+        }
+
+        function pushLine(text) {
+          const line = '[' + nowStamp() + '] ' + String(text || '');
+          lines.push(line);
+          if (lines.length > maxLines) lines.splice(0, lines.length - maxLines);
+          if (logEl) logEl.textContent = lines.join('\n') + '\n';
+          if (logEl) logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        async function refreshWorkflowEvents() {
+          try {
+            const payload = await apiFetch('/api/v1/workflow-events/claims/' + encodeURIComponent(claimKey) + '?limit=120&offset=0', { timeoutMs: 15000 });
+            const items = Array.isArray(payload && payload.items) ? payload.items : [];
+            items.slice().reverse().forEach(function (evt) {
+              const id = String(evt && evt.id != null ? evt.id : '').trim();
+              if (!id || seenEventIds.has(id)) return;
+              seenEventIds.add(id);
+              const when = evt && evt.occurred_at ? String(evt.occurred_at) : '';
+              const type = evt && evt.event_type ? String(evt.event_type) : 'event';
+              const actor = evt && evt.actor_id ? String(evt.actor_id) : '';
+              pushLine('server_event: ' + type + (actor ? (' | actor=' + actor) : '') + (when ? (' | at=' + when) : ''));
+              const pl = evt && evt.event_payload ? evt.event_payload : null;
+              if (pl && typeof pl === 'object') {
+                const compact = JSON.stringify(pl);
+                if (compact && compact.length <= 700) pushLine('  payload: ' + compact);
+              }
+            });
+          } catch (err) {
+            pushLine('server_event_refresh_failed: ' + String(err && err.message ? err.message : err));
+          }
+        }
+
+        let pollTimer = null;
+        function startPolling() {
+          if (pollTimer) return;
+          pollTimer = window.setInterval(function () {
+            refreshWorkflowEvents();
+          }, 5000);
+        }
+        function stopPolling() {
+          if (!pollTimer) return;
+          window.clearInterval(pollTimer);
+          pollTimer = null;
+        }
+
+        function setProgress(processed, total, label, meta) {
+          const p = Number(processed || 0);
+          const t = Math.max(1, Number(total || 0));
+          if (processedEl) processedEl.textContent = String(p) + '/' + String(total || 0);
+          const m = meta && typeof meta === 'object' ? meta : {};
+          if (extractedEl) extractedEl.textContent = String(m.extractedCount != null ? m.extractedCount : '');
+          if (skippedEl) skippedEl.textContent = String(m.skippedCount != null ? m.skippedCount : '');
+          if (failedEl) failedEl.textContent = String(m.failedCount != null ? m.failedCount : '');
+          const pct = Math.max(0, Math.min(100, Math.round((p / t) * 100)));
+          if (fillEl) fillEl.style.width = String(pct) + '%';
+          if (stageEl) {
+            const stage = m.stage ? String(m.stage) : '';
+            stageEl.textContent = (stage ? ('Stage: ' + stage + ' | ') : '') + (label ? ('Now: ' + String(label)) : 'Running…');
+          }
+        }
+
+        function close() {
+          stopPolling();
+          backdrop.remove();
+        }
+
+        if (closeBtn) closeBtn.addEventListener('click', close);
+        backdrop.addEventListener('click', function (event) {
+          if (event.target === backdrop) close();
+        });
+        backdrop.addEventListener('keydown', function (event) {
+          if (event.key === 'Escape') close();
+        });
+        if (copyBtn) {
+          copyBtn.addEventListener('click', async function () {
+            const txt = lines.join('\n');
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(txt);
+                pushLine('copied_logs_to_clipboard');
+                return;
+              }
+            } catch (_err) {}
+            window.prompt('Copy logs:', txt);
+          });
+        }
+        if (refreshBtn) refreshBtn.addEventListener('click', refreshWorkflowEvents);
+
+        pushLine('AI batch started for claim ' + claimKey + '.');
+        startPolling();
+        refreshWorkflowEvents();
+
+        return {
+          log: pushLine,
+          setProgress: setProgress,
+          refreshWorkflowEvents: refreshWorkflowEvents,
+          close: close,
+          stopPolling: stopPolling,
+        };
+      }
+
       const btn = buttonEl;
       const oldText = btn ? btn.textContent : '';
       if (btn) {
@@ -5607,11 +6153,22 @@
       }
 
       try {
+        const progressModal = openAiBatchProgressModal();
         const summary = await runCasePreparationPipeline(claimKey, String((me && me.username) || 'user-ui'), {
           force: false,
           preferOpenAI: false,
           strictOpenAI: false,
+          onProgress: function (processed, total, label, meta) {
+            if (progressModal && progressModal.setProgress) progressModal.setProgress(processed, total, label, meta);
+          },
+          onLog: function (line) {
+            if (progressModal && progressModal.log) progressModal.log(String(line || ''));
+          },
         });
+        try {
+          if (progressModal && progressModal.refreshWorkflowEvents) await progressModal.refreshWorkflowEvents();
+          if (progressModal && progressModal.log) progressModal.log('AI batch finished. extracted=' + String(summary.extractedCount || 0) + ', skipped=' + String(summary.skippedCount || 0) + ', failed=' + String(summary.failedCount || 0));
+        } catch (_err) {}
         setMessage(
           'upload-doc-list-msg',
           'ok',
@@ -6328,7 +6885,10 @@
       openReportEditorModal();
 
       try {
-        const payload = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(claimUuid) + '/latest-html?source=' + encodeURIComponent(reportEditorCurrentSource));
+        const payload = await apiFetch(
+          '/api/v1/user-tools/completed-reports/' + encodeURIComponent(claimUuid) + '/latest-html?source=' + encodeURIComponent(reportEditorCurrentSource),
+          { timeoutMs: 15000 }
+        );
         const html = String(payload && payload.report_html ? payload.report_html : '').trim();
         if (!html) {
           throw new Error('No saved report HTML found for this source.');
@@ -8318,32 +8878,6 @@ async function renderLegacyMigration() {
 
   boot();
 })();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

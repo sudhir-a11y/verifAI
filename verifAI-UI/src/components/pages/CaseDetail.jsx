@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../app/auth";
 import { formatDateTime } from "../../lib/format";
-import { generateClaimStructuredData, getClaim, updateClaimStatus } from "../../services/claims";
+import { generateClaimStructuredData, getClaim, getClaimStructuredData, updateClaimStatus } from "../../services/claims";
 import { listDocuments, getDocumentDownloadUrl } from "../../services/documents";
 import { evaluateClaimChecklist, getLatestClaimChecklist } from "../../services/checklist";
 import { claimDocumentStatus } from "../../services/userTools";
@@ -221,12 +221,70 @@ export default function CaseDetail() {
   const [previewUrl, setPreviewUrl] = useState("");
   const [structuredData, setStructuredData] = useState(null);
   const [workflowEvents, setWorkflowEvents] = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState("");
+  const [pipelineStats, setPipelineStats] = useState({
+    total: 0,
+    processed: 0,
+    extracted: 0,
+    skipped: 0,
+    failed: 0,
+    stage: "Idle",
+    currentDoc: "",
+  });
 
   function pushLog(line) {
     const ts = new Date().toLocaleTimeString();
     const msg = `[${ts}] ${String(line || "")}`;
     setPipelineLog((prev) => [msg, ...(prev || [])].slice(0, 200));
   }
+
+  async function refreshWorkflowEvents() {
+    if (!claimUuid) return;
+    setEventsLoading(true);
+    setEventsError("");
+    try {
+      const resp = await listClaimWorkflowEvents(claimUuid, { limit: 80, offset: 0 });
+      setWorkflowEvents(Array.isArray(resp?.items) ? resp.items : []);
+    } catch (e) {
+      setWorkflowEvents([]);
+      setEventsError(String(e?.message || "Failed to load workflow events."));
+    } finally {
+      setEventsLoading(false);
+    }
+  }
+
+  async function copyPipelineLogsToClipboard() {
+    const lines = Array.isArray(pipelineLog) ? pipelineLog.slice().reverse() : [];
+    const txt = lines.join("\n");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(txt);
+        pushLog("Copied pipeline logs to clipboard.");
+        return;
+      }
+    } catch (_err) {}
+    window.prompt("Copy logs:", txt);
+  }
+
+  useEffect(() => {
+    if (!claimUuid) return;
+    if (!(pipelineRunning || runningChecklist)) return;
+    let cancelled = false;
+
+    const tick = async () => {
+      if (cancelled) return;
+      await refreshWorkflowEvents();
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claimUuid, pipelineRunning, runningChecklist]);
 
   function buildReportHtmlFromStructuredData(data) {
     const payload = data && typeof data === "object" ? data : {};
@@ -388,6 +446,8 @@ export default function CaseDetail() {
     setRunningChecklist(true);
     setError("");
     try {
+      // Ensure diagnosis is auto-generated before checklist (no manual input).
+      await getClaimStructuredData(claimUuid, { auto_generate: true, use_llm: true }).catch(() => null);
       const resp = await evaluateClaimChecklist(claimUuid, {
         actor_id: String(user?.username || "").trim() || undefined,
         force_source_refresh: forceRefresh,
@@ -451,6 +511,7 @@ export default function CaseDetail() {
     setError("");
     setPipelineRunning(true);
     try {
+      setPipelineStats((prev) => ({ ...(prev || {}), stage: "Extracting one document…", currentDoc: docId }));
       pushLog(`Extraction started for doc ${docId} (${pipelineProvider}${pipelineForce ? ", force" : ""})`);
       const resp = await runDocumentExtraction(docId, {
         provider: pipelineProvider,
@@ -459,11 +520,14 @@ export default function CaseDetail() {
       });
       setExtractionHeads((prev) => ({ ...(prev || {}), [docId]: resp }));
       pushLog(`Extraction done for doc ${docId}. model=${String(resp?.model_name || "-")}`);
+      await refreshWorkflowEvents();
     } catch (e) {
       pushLog(`Extraction failed for doc ${docId}: ${String(e?.message || e)}`);
       setError(String(e?.message || "Extraction failed."));
+      await refreshWorkflowEvents();
     } finally {
       setPipelineRunning(false);
+      setPipelineStats((prev) => ({ ...(prev || {}), stage: "Idle", currentDoc: "" }));
     }
   }
 
@@ -479,13 +543,29 @@ export default function CaseDetail() {
     setError("");
     setPipelineLog([]);
     pushLog("Pipeline started.");
+    setPipelineStats({
+      total: list.length,
+      processed: 0,
+      extracted: 0,
+      skipped: 0,
+      failed: 0,
+      stage: "Starting…",
+      currentDoc: "",
+    });
 
     try {
+      await refreshWorkflowEvents();
       for (let i = 0; i < list.length; i += 1) {
         const d = list[i];
         const docId = String(d?.id || "").trim();
         if (!docId) continue;
 
+        setPipelineStats((prev) => ({
+          ...(prev || {}),
+          processed: i + 1,
+          stage: `Checking existing extraction (${i + 1}/${list.length})…`,
+          currentDoc: String(d?.file_name || docId),
+        }));
         pushLog(`Doc ${i + 1}/${list.length}: checking extractions...`);
         let hasExisting = false;
         try {
@@ -496,20 +576,33 @@ export default function CaseDetail() {
         }
 
         if (hasExisting && !pipelineForce) {
+          setPipelineStats((prev) => ({ ...(prev || {}), skipped: Number(prev?.skipped || 0) + 1, stage: "Skipped (already extracted)" }));
           pushLog(`Doc ${i + 1}/${list.length}: existing extraction found, skipping.`);
           continue;
         }
 
+        setPipelineStats((prev) => ({ ...(prev || {}), stage: `Extracting (${pipelineProvider})…` }));
         pushLog(`Doc ${i + 1}/${list.length}: running extraction (${pipelineProvider})...`);
-        const resp = await runDocumentExtraction(docId, {
-          provider: pipelineProvider,
-          actor_id: String(user?.username || "").trim() || undefined,
-          force_refresh: pipelineForce,
-        });
-        setExtractionHeads((prev) => ({ ...(prev || {}), [docId]: resp }));
-        pushLog(`Doc ${i + 1}/${list.length}: extraction done.`);
+        try {
+          const resp = await runDocumentExtraction(docId, {
+            provider: pipelineProvider,
+            actor_id: String(user?.username || "").trim() || undefined,
+            force_refresh: pipelineForce,
+          });
+          setExtractionHeads((prev) => ({ ...(prev || {}), [docId]: resp }));
+          setPipelineStats((prev) => ({ ...(prev || {}), extracted: Number(prev?.extracted || 0) + 1, stage: "Extraction done" }));
+          pushLog(`Doc ${i + 1}/${list.length}: extraction done.`);
+        } catch (e) {
+          setPipelineStats((prev) => ({ ...(prev || {}), failed: Number(prev?.failed || 0) + 1, stage: "Extraction failed" }));
+          pushLog(`Doc ${i + 1}/${list.length}: extraction failed (${String(e?.message || e)})`);
+        }
+
+        if ((i + 1) % 2 === 0) {
+          await refreshWorkflowEvents();
+        }
       }
 
+      setPipelineStats((prev) => ({ ...(prev || {}), stage: "Evaluating checklist…", currentDoc: "" }));
       pushLog("Evaluating checklist...");
       const evaluated = await evaluateClaimChecklist(claimUuid, {
         actor_id: String(user?.username || "").trim() || undefined,
@@ -517,11 +610,16 @@ export default function CaseDetail() {
       });
       setChecklist(normalizeChecklist(evaluated));
       pushLog(`Checklist evaluated. Recommendation: ${String(evaluated?.recommendation || "-")}`);
+      setPipelineStats((prev) => ({ ...(prev || {}), stage: "Completed" }));
+      await refreshWorkflowEvents();
     } catch (e) {
       pushLog(`Pipeline failed: ${String(e?.message || e)}`);
       setError(String(e?.message || "Pipeline failed."));
+      setPipelineStats((prev) => ({ ...(prev || {}), stage: `Failed: ${String(e?.message || e)}` }));
+      await refreshWorkflowEvents();
     } finally {
       setPipelineRunning(false);
+      setPipelineStats((prev) => ({ ...(prev || {}), currentDoc: "" }));
     }
   }
 
@@ -630,7 +728,7 @@ export default function CaseDetail() {
             disabled={loading || runningChecklist}
             type="button"
           >
-            {runningChecklist ? "Running checklist..." : "Run checklist"}
+            {runningChecklist ? "Running AI → checklist..." : "Run AI → Run checklist"}
           </button>
           <button
             className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
@@ -796,7 +894,7 @@ export default function CaseDetail() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
+	          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
             <table className="min-w-[900px] w-full text-left text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500">
                 <tr>
@@ -875,15 +973,117 @@ export default function CaseDetail() {
                 ) : null}
               </tbody>
             </table>
-          </div>
+	          </div>
 
-          <div className="space-y-2">
-            <div className="rounded-2xl border border-slate-200 bg-white p-3">
-              <div className="text-xs font-semibold text-slate-500">Pipeline log</div>
-              <pre className="mt-2 max-h-[320px] overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-100">
-                {(pipelineLog || []).join("\n")}
-              </pre>
-            </div>
+	          <div className="space-y-2">
+	            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+	              <div className="flex flex-wrap items-center justify-between gap-2">
+	                <div>
+	                  <div className="text-xs font-semibold text-slate-500">AI Progress</div>
+	                  <div className="mt-1 text-xs text-slate-600">
+	                    {pipelineStats?.stage || "Idle"}
+	                    {pipelineStats?.currentDoc ? (
+	                      <span>
+	                        {" "}
+	                        • <span className="font-mono">{String(pipelineStats.currentDoc)}</span>
+	                      </span>
+	                    ) : null}
+	                  </div>
+	                </div>
+	                <div className="flex flex-wrap items-center gap-2">
+	                  <button
+	                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-60"
+	                    type="button"
+	                    onClick={refreshWorkflowEvents}
+	                    disabled={eventsLoading || loading}
+	                  >
+	                    {eventsLoading ? "Refreshing..." : "Refresh events"}
+	                  </button>
+	                  <button
+	                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+	                    type="button"
+	                    onClick={copyPipelineLogsToClipboard}
+	                  >
+	                    Copy logs
+	                  </button>
+	                  <button
+	                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+	                    type="button"
+	                    onClick={() => {
+	                      setPipelineLog([]);
+	                      setPipelineStats((prev) => ({ ...(prev || {}), stage: "Idle", currentDoc: "" }));
+	                    }}
+	                  >
+	                    Clear
+	                  </button>
+	                </div>
+	              </div>
+
+	              <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
+	                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+	                  <div className="text-[11px] font-semibold text-slate-500">Processed</div>
+	                  <div className="mt-1 text-sm font-semibold">
+	                    {Number(pipelineStats?.processed) || 0}/{Number(pipelineStats?.total) || 0}
+	                  </div>
+	                </div>
+	                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+	                  <div className="text-[11px] font-semibold text-slate-500">Extracted</div>
+	                  <div className="mt-1 text-sm font-semibold">{Number(pipelineStats?.extracted) || 0}</div>
+	                </div>
+	                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+	                  <div className="text-[11px] font-semibold text-slate-500">Skipped</div>
+	                  <div className="mt-1 text-sm font-semibold">{Number(pipelineStats?.skipped) || 0}</div>
+	                </div>
+	                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+	                  <div className="text-[11px] font-semibold text-slate-500">Failed</div>
+	                  <div className="mt-1 text-sm font-semibold">{Number(pipelineStats?.failed) || 0}</div>
+	                </div>
+	                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+	                  <div className="text-[11px] font-semibold text-slate-500">Server events</div>
+	                  <div className="mt-1 text-sm font-semibold">{workflowEvents.length}</div>
+	                </div>
+	              </div>
+
+	              <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+	                <div
+	                  className="h-full rounded-full bg-gradient-to-r from-slate-900 to-slate-600 transition-all"
+	                  style={{
+	                    width: `${Math.min(
+	                      100,
+	                      Math.round(
+	                        ((Number(pipelineStats?.processed) || 0) / Math.max(1, Number(pipelineStats?.total) || 0)) * 100
+	                      )
+	                    )}%`,
+	                  }}
+	                />
+	              </div>
+
+	              {eventsError ? <p className="mt-2 text-xs text-red-600">{eventsError}</p> : null}
+	              <div className="mt-3">
+	                <div className="text-xs font-semibold text-slate-500">Latest workflow events</div>
+	                <div className="mt-2 max-h-[160px] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800">
+	                  {workflowEvents.length ? (
+	                    <ul className="space-y-1">
+	                      {workflowEvents.slice(0, 10).map((evt) => (
+	                        <li key={String(evt?.id)} className="rounded-lg bg-white px-2 py-1">
+	                          <span className="font-semibold">{String(evt?.event_type || "event")}</span>{" "}
+	                          <span className="text-slate-500">• {formatDateTime(evt?.occurred_at)}</span>
+	                        </li>
+	                      ))}
+	                    </ul>
+	                  ) : (
+	                    <span className="text-slate-600">No events yet.</span>
+	                  )}
+	                </div>
+	              </div>
+	            </div>
+
+	            <div className="rounded-2xl border border-slate-200 bg-white p-3">
+	              <div className="text-xs font-semibold text-slate-500">Pipeline log</div>
+	              <pre className="mt-2 max-h-[320px] overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-100">
+	                {(pipelineLog || []).join("\n")}
+	              </pre>
+	            </div>
             {selectedExtraction ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="flex items-center justify-between gap-2">

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,13 +10,45 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.ai.extraction import ExtractionConfigError, ExtractionProcessingError, run_extraction
-from app.infrastructure.storage.storage_service import StorageConfigError, StorageOperationError, download_bytes
+from app.infrastructure.storage.storage_service import (
+    StorageConfigError,
+    StorageOperationError,
+    download_bytes,
+    download_http_bytes,
+)
 from app.repositories import claim_documents_repo, document_extractions_repo, workflow_events_repo
 from app.schemas.extraction import ExtractionListResponse, ExtractionProvider, ExtractionResponse
 
 
 class DocumentNotFoundError(Exception):
     pass
+
+
+_FAILED_EXTRACTION_RETRY_COOLDOWN = timedelta(minutes=10)
+
+
+def _normalize_http_url(value: Any) -> str:
+    v = str(value or "").strip()
+    if v.startswith(("http://", "https://")):
+        return v
+    return ""
+
+
+def _direct_document_url(storage_key: str, metadata: dict[str, Any]) -> str:
+    # If storage_key itself is a URL, use it.
+    direct = _normalize_http_url(storage_key)
+    if direct:
+        return direct
+    for candidate in (
+        metadata.get("external_document_url"),
+        metadata.get("external_url"),
+        metadata.get("legacy_s3_url"),
+        metadata.get("s3_url"),
+    ):
+        direct = _normalize_http_url(candidate)
+        if direct:
+            return direct
+    return ""
 
 
 def _normalize_json(value: Any, as_type: type) -> Any:
@@ -73,19 +106,42 @@ def run_document_extraction(
     if doc is None:
         raise DocumentNotFoundError
 
+    # If the last extraction attempt failed recently, avoid hot-loop retries
+    # unless the caller explicitly forces refresh.
+    if not force_refresh:
+        parse_status = str(doc.get("parse_status") or "").strip().lower()
+        parsed_at_raw = doc.get("parsed_at")
+        parsed_at: datetime | None = parsed_at_raw if isinstance(parsed_at_raw, datetime) else None
+        if parse_status == "failed" and parsed_at is not None:
+            parsed_at_utc = parsed_at.astimezone(timezone.utc) if parsed_at.tzinfo else parsed_at.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - parsed_at_utc) < _FAILED_EXTRACTION_RETRY_COOLDOWN:
+                raise ExtractionProcessingError(
+                    "extraction recently failed; cooldown active for 10 minutes (use force_refresh=true to retry immediately)"
+                )
+
     claim_id = UUID(str(doc["claim_id"]))
     doc_metadata = _normalize_json(doc.get("metadata"), dict)
     resolved_s3_bucket = str(doc_metadata.get("bucket") or doc_metadata.get("legacy_s3_bucket") or "").strip() or None
     storage_key = str(doc.get("storage_key") or "").strip()
 
-    if force_refresh:
-        document_extractions_repo.delete_by_claim_and_document(db, str(claim_id), str(document_id))
-
-    claim_documents_repo.update_parse_status(db, str(document_id), "processing")
-    db.commit()
-
     try:
-        payload = download_bytes(storage_key)
+        if force_refresh:
+            document_extractions_repo.delete_by_claim_and_document(db, str(claim_id), str(document_id))
+
+        claim_documents_repo.update_parse_status(db, str(document_id), "processing")
+        db.commit()
+
+        if not storage_key:
+            raise ExtractionProcessingError("document storage key is missing; cannot download payload")
+
+        direct_url = _direct_document_url(storage_key, doc_metadata)
+        if direct_url and (
+            str(doc_metadata.get("storage_provider") or "").strip().lower() in {"external_link", "legacy_external"}
+            or storage_key.lower().startswith("legacy-external/")
+        ):
+            payload = download_http_bytes(direct_url, timeout_s=60.0)
+        else:
+            payload = download_bytes(storage_key, bucket=resolved_s3_bucket)
         extraction_data = run_extraction(
             provider=provider,
             document_name=doc["file_name"],

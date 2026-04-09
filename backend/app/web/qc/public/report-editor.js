@@ -1,4 +1,46 @@
 (function () {
+  const DEFAULT_API_TIMEOUT_MS = 45000;
+
+  function isAbortError(err) {
+    if (!err) return false;
+    if (err.name === 'AbortError') return true;
+    const msg = String(err && err.message ? err.message : err);
+    return msg.toLowerCase().indexOf('abort') >= 0;
+  }
+
+  async function runWithTimeout(task, options, timeoutMs) {
+    const ms = Number(timeoutMs || DEFAULT_API_TIMEOUT_MS);
+    const canAbort = typeof AbortController === 'function' && Number.isFinite(ms) && ms > 0;
+    if (!canAbort) return await task(null);
+
+    const controller = new AbortController();
+    const originalSignal = options && options.signal ? options.signal : null;
+    if (originalSignal) {
+      if (originalSignal.aborted) controller.abort();
+      else originalSignal.addEventListener('abort', function () { controller.abort(); }, { once: true });
+    }
+
+    const timer = setTimeout(function () { controller.abort(); }, ms);
+    try {
+      return await task(controller.signal);
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error('Request timed out after ' + String(Math.max(1, Math.round(ms / 1000))) + 's');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function fetchTextWithTimeout(path, options, timeoutMs) {
+    return await runWithTimeout(async function (signal) {
+      const resp = await fetch(path, { ...(options || {}), signal: signal || undefined });
+      const raw = await resp.text();
+      return { resp: resp, raw: raw };
+    }, options, timeoutMs);
+  }
+
   function safeStorageGet(key) {
     try {
       return localStorage.getItem(key) || '';
@@ -101,11 +143,15 @@
     }
 
     const opts = options || {};
+    const timeoutMs = Number(opts && opts.timeoutMs ? opts.timeoutMs : DEFAULT_API_TIMEOUT_MS);
     const headers = new Headers(opts.headers || {});
     headers.set('Authorization', 'Bearer ' + token);
 
-    const resp = await fetch(path, { ...opts, headers: headers });
-    const raw = await resp.text();
+    const fetchOpts = { ...opts, headers: headers };
+    delete fetchOpts.timeoutMs;
+    const result = await fetchTextWithTimeout(path, fetchOpts, timeoutMs);
+    const resp = result.resp;
+    const raw = result.raw;
     let body = null;
     try {
       body = raw ? JSON.parse(raw) : null;
@@ -200,7 +246,10 @@
     for (let i = 0; i < sources.length; i += 1) {
       const src = sources[i];
       try {
-        const body = await apiFetch('/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=' + encodeURIComponent(src));
+        const body = await apiFetch(
+          '/api/v1/user-tools/completed-reports/' + encodeURIComponent(params.claimUuid) + '/latest-html?source=' + encodeURIComponent(src),
+          { timeoutMs: 15000 }
+        );
         const html = String(body && body.report_html ? body.report_html : '').trim();
         if (html) return html;
       } catch (_err) {
@@ -786,9 +835,6 @@
 
   init();
 })();
-
-
-
 
 
 

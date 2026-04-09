@@ -33,9 +33,55 @@ def ensure_claim_completed_at_column(db: Session) -> None:
     with _COMPLETED_AT_BOOTSTRAP_LOCK:
         if _COMPLETED_AT_BOOTSTRAPPED:
             return
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE claims ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_claims_completed_at ON claims(completed_at)"))
+
+        # Fast-path: if both column + index already exist, avoid taking DDL locks.
+        # (Even IF NOT EXISTS statements still need table-level locks.)
+        try:
+            with engine.connect() as conn:
+                has_column = bool(
+                    conn.execute(
+                        text(
+                            """
+                            SELECT 1
+                            FROM pg_attribute
+                            WHERE attrelid = 'claims'::regclass
+                              AND attname = 'completed_at'
+                              AND NOT attisdropped
+                            LIMIT 1
+                            """
+                        )
+                    ).scalar()
+                )
+                has_index = bool(
+                    conn.execute(text("SELECT to_regclass('idx_claims_completed_at')")).scalar()
+                )
+        except Exception:
+            # If introspection fails, fall back to the safest behavior: attempt DDL,
+            # but with short lock timeouts so we don't hang request threads.
+            has_column = False
+            has_index = False
+
+        if not has_column:
+            with engine.begin() as conn:
+                conn.execute(text("SET lock_timeout TO '2s'"))
+                conn.execute(text("SET statement_timeout TO '10s'"))
+                conn.execute(
+                    text(
+                        "ALTER TABLE claims ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"
+                    )
+                )
+
+        if not has_index:
+            # Use CONCURRENTLY to avoid blocking reads/writes on large tables.
+            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text("SET lock_timeout TO '2s'"))
+                conn.execute(text("SET statement_timeout TO '30s'"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_claims_completed_at ON claims(completed_at)"
+                    )
+                )
+
         _COMPLETED_AT_BOOTSTRAPPED = True
 
 

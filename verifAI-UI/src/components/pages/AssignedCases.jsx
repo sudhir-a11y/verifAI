@@ -3,6 +3,7 @@ import { useAuth } from "../../app/auth";
 import { listClaims } from "../../services/claims";
 import { formatDateTime } from "../../lib/format";
 import { useNavigate } from "react-router-dom";
+import { listClaimWorkflowEvents } from "../../services/workflowEvents";
 
 const STATUS_OPTIONS = [
   { value: "", label: "All" },
@@ -24,7 +25,37 @@ export default function AssignedCases() {
   const [error, setError] = useState("");
   const [data, setData] = useState({ total: 0, items: [] });
 
+  const [eventsOpen, setEventsOpen] = useState(false);
+  const [eventsClaimUuid, setEventsClaimUuid] = useState("");
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState("");
+  const [events, setEvents] = useState([]);
+
   const canUse = useMemo(() => ["doctor", "super_admin", "user", "auditor"].includes(role), [role]);
+
+  async function refreshEvents(claimUuid) {
+    const id = String(claimUuid || "").trim();
+    if (!id) return;
+    setEventsLoading(true);
+    setEventsError("");
+    try {
+      const resp = await listClaimWorkflowEvents(id, { limit: 120, offset: 0 });
+      setEvents(Array.isArray(resp?.items) ? resp.items : []);
+    } catch (e) {
+      setEvents([]);
+      setEventsError(String(e?.message || "Failed to load workflow events."));
+    } finally {
+      setEventsLoading(false);
+    }
+  }
+
+  async function openEventsModal(claimUuid) {
+    const id = String(claimUuid || "").trim();
+    if (!id) return;
+    setEventsClaimUuid(id);
+    setEventsOpen(true);
+    await refreshEvents(id);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -97,14 +128,24 @@ export default function AssignedCases() {
                   <td className="px-4 py-3">{String(c.assigned_doctor_id || "-")}</td>
                   <td className="px-4 py-3 text-slate-600">{formatDateTime(c.updated_at)}</td>
                   <td className="px-4 py-3">
-                    <button
-                      className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
-                      type="button"
-                      onClick={() => navigate(`/app/case-detail?claim_uuid=${encodeURIComponent(String(c.id || ""))}`)}
-                      disabled={!c?.id}
-                    >
-                      Open
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+                        type="button"
+                        onClick={() => navigate(`/app/case-detail?claim_uuid=${encodeURIComponent(String(c.id || ""))}`)}
+                        disabled={!c?.id}
+                      >
+                        Open
+                      </button>
+                      <button
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-60"
+                        type="button"
+                        onClick={() => openEventsModal(String(c.id || ""))}
+                        disabled={!c?.id}
+                      >
+                        AI events
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -117,6 +158,81 @@ export default function AssignedCases() {
               ) : null}
             </tbody>
           </table>
+        </div>
+      ) : null}
+
+      {eventsOpen ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-slate-900/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEventsOpen(false);
+          }}
+        >
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">AI Progress (Workflow Events)</div>
+                <div className="mt-1 text-xs text-slate-600">
+                  Claim UUID: <span className="font-mono">{eventsClaimUuid}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-60"
+                  type="button"
+                  onClick={() => refreshEvents(eventsClaimUuid)}
+                  disabled={!eventsClaimUuid || eventsLoading}
+                >
+                  {eventsLoading ? "Refreshing..." : "Refresh"}
+                </button>
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50"
+                  type="button"
+                  onClick={() => setEventsOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="px-5 py-4">
+              {eventsError ? <p className="text-sm text-red-600">{eventsError}</p> : null}
+              <div className="max-h-[60vh] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3">
+                {events.length ? (
+                  <ul className="space-y-2 text-sm">
+                    {events
+                      .slice()
+                      .reverse()
+                      .map((evt) => (
+                        <li key={String(evt?.id)} className="rounded-lg bg-white p-3 shadow-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="font-medium text-slate-900">{String(evt?.event_type || "event")}</div>
+                            <div className="text-xs text-slate-600">{formatDateTime(evt?.occurred_at)}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-slate-600">
+                            actor: <span className="font-mono">{String(evt?.actor_id || "-")}</span>
+                          </div>
+                          {evt?.event_payload ? (
+                            <pre className="mt-2 overflow-auto rounded-lg bg-slate-950 p-2 text-xs text-slate-100">
+                              {JSON.stringify(evt.event_payload, null, 2)}
+                            </pre>
+                          ) : null}
+                        </li>
+                      ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-slate-600">No events found yet.</p>
+                )}
+              </div>
+              <p className="mt-3 text-xs text-slate-600">
+                Tip: look for <span className="font-mono">document_extraction_failed</span>,{" "}
+                <span className="font-mono">claim_checklist_evaluated</span>,{" "}
+                <span className="font-mono">ai_decision_failed</span>.
+              </p>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

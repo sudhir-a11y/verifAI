@@ -733,6 +733,91 @@ tbody tr:hover {
   width: min(980px, 96vw);
 }
 
+.ai-progress-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-progress-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ai-progress-kpi {
+  border: 1px solid #d8e3f0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #ffffff;
+}
+
+.ai-progress-kpi .k {
+  font-size: 0.72rem;
+  color: #5b6b7f;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ai-progress-kpi .v {
+  margin-top: 4px;
+  font-weight: 700;
+  font-size: 1rem;
+  color: #0f172a;
+}
+
+.ai-progress-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+}
+
+.ai-progress-bar__fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(135deg, var(--primary), var(--primary-2));
+  transition: width 160ms ease;
+}
+
+.ai-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-progress-meta .muted {
+  margin: 0;
+}
+
+.ai-progress-log {
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #d8e3f0;
+  background: #0b1220;
+  color: #dbeafe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  max-height: 44vh;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.ai-progress-log .dim {
+  color: rgba(219, 234, 254, 0.72);
+}
+
+@media (max-width: 820px) {
+  .ai-progress-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -1008,6 +1093,82 @@ tbody tr:hover {
 .case-review-panel textarea {
   min-height: 84px;
   resize: vertical;
+}
+
+.brain-panel {
+  margin: 12px 16px 0;
+  border: 1px solid rgba(14, 79, 134, 0.22);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--card-soft);
+}
+
+.brain-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.brain-panel__title {
+  margin: 0;
+  font-size: 14px;
+  color: #163a5f;
+}
+
+.brain-panel__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.brain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.brain-cell {
+  border: 1px solid rgba(14, 79, 134, 0.14);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.brain-k {
+  font-size: 11px;
+  color: #3f5872;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.brain-v {
+  margin-top: 4px;
+  font-weight: 700;
+  color: #0b2441;
+}
+
+.brain-conflicts {
+  margin-top: 6px;
+}
+
+.brain-list {
+  margin: 6px 0 0 16px;
+  padding: 0;
+}
+
+.brain-list li {
+  margin: 4px 0;
+}
+
+.brain-subtitle {
+  margin: 10px 0 8px;
+  font-size: 13px;
+  color: #163a5f;
 }
 
 @media (max-width: 768px) {

@@ -10,6 +10,7 @@ from app.api.v1.endpoints.doctor_registry import router as doctor_registry_route
 from app.api.v1.endpoints.extractions import router as extractions_router
 from app.api.v1.endpoints.health import router as health_router
 from app.api.v1.endpoints.integrations import router as integrations_router
+from app.api.v1.endpoints.ml_decision import router as ml_decision_router
 from app.api.v1.endpoints.user_tools import router as user_tools_router
 from app.api.v1.endpoints.workflow_events import router as workflow_events_router
 
@@ -24,5 +25,6 @@ api_router.include_router(document_analyzer_router)
 api_router.include_router(doctor_registry_router)
 api_router.include_router(extractions_router)
 api_router.include_router(checklist_router)
+api_router.include_router(ml_decision_router)
 api_router.include_router(user_tools_router)
 api_router.include_router(workflow_events_router)

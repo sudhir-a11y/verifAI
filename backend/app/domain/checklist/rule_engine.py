@@ -298,6 +298,7 @@ def build_claim_text_context(
     *,
     claim_row: dict[str, Any],
     extraction_rows: list[dict[str, Any]],
+    structured_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parts: list[str] = []
     parts.extend(
@@ -313,6 +314,19 @@ def build_claim_text_context(
             }
         )
     )
+
+    if isinstance(structured_row, dict) and structured_row:
+        # Keep the checklist context compact; avoid dumping `raw_payload`.
+        structured_ctx = {
+            "structured_diagnosis": structured_row.get("diagnosis"),
+            "structured_hospital_name": structured_row.get("hospital_name"),
+            "structured_claim_amount": structured_row.get("claim_amount"),
+            "structured_complaints": structured_row.get("complaints"),
+            "structured_findings": structured_row.get("findings"),
+            "structured_investigation": structured_row.get("investigation_finding_in_details"),
+            "structured_medicine_used": structured_row.get("medicine_used"),
+        }
+        parts.extend(flatten_text(structured_ctx))
 
     extraction_id = None
     for idx, extraction_row in enumerate(extraction_rows):
@@ -653,4 +667,3 @@ def build_rulewise_conclusion(entries: list[ChecklistEntry], recommendation: str
         parts.append("Clinical summary: " + ai_reason)
 
     return " ".join([p for p in parts if p]).strip()
-

@@ -138,20 +138,70 @@ class ClaimConclusionGenerateResponse(BaseModel):
     triggered_rules_count: int = 0
     source: str = "rule_engine"
 
+class ClaimReportAIGenerateRequest(BaseModel):
+    actor_id: str | None = Field(default=None, max_length=100)
+    report_status: str = Field(default="draft", max_length=30)
+    save: bool = True
+    auto_generate_structured: bool = True
+    use_llm: bool = True
+    force_refresh: bool = False
+
+
+class ClaimReportAIGenerateResponse(BaseModel):
+    claim_id: UUID
+    report_html: str
+    saved: bool = False
+    saved_version_no: int | None = None
+    model: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
 
 class ClaimDecideRequest(BaseModel):
     use_llm: bool = True
     force_refresh: bool = False
     auto_advance: bool = False
+    auto_generate_report: bool = False
     actor_id: str | None = Field(default=None, max_length=100)
+
+
+class ClaimPrepareRequest(BaseModel):
+    use_llm: bool = True
+    force_refresh: bool = False
+    actor_id: str | None = Field(default=None, max_length=100)
+
+
+class ClaimPrepareResponse(BaseModel):
+    claim_id: UUID
+    queued: bool = True
+    lock_acquired: bool | None = None
+    extracted_documents: int | None = None
+    structured_generated: bool | None = None
+    checklist_ran: bool | None = None
+
+class FinalDecisionMLPrediction(BaseModel):
+    available: bool = False
+    label: str | None = None
+    confidence: float = 0.0
+    probabilities: dict[str, float] | None = None
+    model_version: str | None = None
+    training_examples: int = 0
+    reason: str | None = None
 
 
 class ClaimDecideResponse(BaseModel):
     claim_id: UUID
+    decision_id: str | None = None
+    generated_at: datetime | None = None
     final_status: str  # "approve" | "reject" | "query"
     reason: str
     source: str  # "ai_auto" | "doctor_override" | "hybrid"
     confidence: float
+    route_target: str | None = None
+    final_status_mapping: str | None = None
+    risk_score: float | None = None
+    risk_breakdown: list[dict] = Field(default_factory=list)
+    conflicts: list[dict] = Field(default_factory=list)
+    ml_prediction: FinalDecisionMLPrediction | dict | None = None
     recommendation: str | None = None
     flags: list[dict] = Field(default_factory=list)
     verifications: dict[str, bool | None] = Field(default_factory=dict)

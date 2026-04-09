@@ -6,35 +6,137 @@
   <title>Auditor QC Review</title>
   <link rel="stylesheet" href="/qc/public/app.css?v=20260348">
   <style>
-    body { margin: 0; font-family: "Outfit", "Segoe UI", Arial, sans-serif; background: #eef3f8; color: #1f2f46; overflow: hidden; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; background: #ffffff; border-bottom: 1px solid #d8e2ef; position: sticky; top: 0; z-index: 10; }
-    .topbar h2 { margin: 0; font-size: 20px; }
-    .topbar .meta { color: #4d6485; font-size: 13px; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .actions button { border: 1px solid #2b64a7; background: #2b64a7; color: #fff; border-radius: 8px; padding: 8px 12px; font-weight: 600; cursor: pointer; }
-    .actions button.soft { background: #fff; color: #2b64a7; }
-    .actions button:disabled { opacity: 0.6; cursor: not-allowed; }
-    #qc-msg { margin: 0; padding: 8px 16px; min-height: 20px; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Outfit", "Segoe UI", Arial, sans-serif; background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 50%, #f8fafc 100%); color: #1f2f46; min-height: 100vh; }
+    
+    /* Topbar */
+    .topbar { 
+      display: flex; 
+      align-items: center; 
+      justify-content: space-between; 
+      gap: 16px; 
+      padding: 16px 24px; 
+      background: rgba(255, 255, 255, 0.95); 
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid #e2e8f0; 
+      position: sticky; 
+      top: 0; 
+      z-index: 100;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    .topbar-left { display: flex; align-items: start; gap: 16px; }
+    .topbar-icon { 
+      width: 48px; 
+      height: 48px; 
+      border-radius: 12px; 
+      background: linear-gradient(135deg, #2563eb, #1d4ed8); 
+      color: white; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center;
+      box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2);
+    }
+    .topbar-icon svg { width: 24px; height: 24px; }
+    .topbar h2 { margin: 0; font-size: 22px; font-weight: 700; color: #0f172a; letter-spacing: -0.025em; }
+    .topbar .meta { 
+      display: flex; 
+      align-items: center; 
+      gap: 12px; 
+      flex-wrap: wrap;
+      color: #64748b; 
+      font-size: 13px; 
+      margin-top: 4px;
+    }
+    .meta-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: #f1f5f9;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .meta-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; }
+    .meta-divider { color: #cbd5e1; }
+    .meta-info { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #64748b; margin-top: 6px; }
+    .meta-info-item { display: inline-flex; align-items: center; gap: 6px; }
+    .meta-info-item svg { width: 14px; height: 14px; }
+    .source-tag { background: #eff6ff; color: #1d4ed8; padding: 2px 8px; border-radius: 6px; font-weight: 600; font-size: 11px; }
+    
+    /* Actions */
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .actions button { 
+      border: none; 
+      background: #0f172a; 
+      color: #fff; 
+      border-radius: 8px; 
+      padding: 10px 16px; 
+      font-weight: 600; 
+      cursor: pointer;
+      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+    .actions button:hover { background: #1e293b; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
+    .actions button.soft { 
+      background: #fff; 
+      color: #334155; 
+      border: 1px solid #cbd5e1;
+    }
+    .actions button.soft:hover { background: #f8fafc; border-color: #94a3b8; }
+    .actions button.success { background: #059669; border: 2px solid #10b981; }
+    .actions button.success:hover { background: #047857; border-color: #059669; }
+    .actions button.danger { background: #dc2626; border: 2px solid #ef4444; }
+    .actions button.danger:hover { background: #b91c1c; border-color: #dc2626; }
+    .actions button.warning { background: #f59e0b; color: #78350f; border: 1px solid #fbbf24; }
+    .actions button.warning:hover { background: #d97706; }
+    .actions button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .action-divider { width: 1px; height: 32px; background: #cbd5e1; }
+    .btn-icon { width: 16px; height: 16px; }
+    
+    /* Messages */
+    #qc-msg { margin: 0; padding: 12px 24px; min-height: 20px; }
+    .alert {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin: 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+    }
+    .alert svg { width: 20px; height: 20px; flex-shrink: 0; }
+    .alert-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+    .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    
+    /* Layout */
     .layout {
       --left-pane-width: 52%;
       display: grid;
       grid-template-columns: minmax(320px, var(--left-pane-width)) 10px minmax(420px, 1fr);
-      gap: 10px;
-      padding: 12px;
+      gap: 12px;
+      padding: 16px 24px;
       height: calc(100vh - 120px);
       box-sizing: border-box;
       align-items: stretch;
     }
+    
+    /* Splitter */
     .splitter {
       width: 10px;
       border-radius: 8px;
-      background: linear-gradient(180deg, #d7e5f5, #c9dcee);
-      border: 1px solid #b8cde3;
+      background: linear-gradient(180deg, #cbd5e1, #94a3b8);
       cursor: col-resize;
       user-select: none;
       touch-action: none;
       align-self: stretch;
       position: relative;
+      transition: background 0.2s;
     }
     .splitter::before {
       content: '';
@@ -45,121 +147,423 @@
       width: 2px;
       height: 36px;
       border-radius: 2px;
-      background: #6f8db2;
-      box-shadow: 0 -8px 0 #6f8db2, 0 8px 0 #6f8db2;
+      background: #64748b;
+      box-shadow: 0 -8px 0 #64748b, 0 8px 0 #64748b;
     }
     .splitter:hover,
     .splitter.dragging {
-      background: linear-gradient(180deg, #c6ddf4, #b4cfe8);
-      border-color: #8fb4db;
+      background: linear-gradient(180deg, #94a3b8, #64748b);
     }
     body.qc-resizing,
     body.qc-resizing * {
       cursor: col-resize !important;
       user-select: none !important;
     }
-    .panel { background: #fff; border: 1px solid #d8e2ef; border-radius: 12px; display: flex; flex-direction: column; min-height: 0; }
-    .panel-head { padding: 10px 12px; border-bottom: 1px solid #e5ecf5; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
-    .panel-body { padding: 10px; min-height: 0; overflow: hidden; }
-    .panel-body.report-pane { display: grid; grid-template-rows: auto 1fr; gap: 10px; }
-    .conclusion-box { border: 1px solid #d8e2ef; border-radius: 10px; background: #f8fbff; padding: 10px; display: grid; gap: 8px; }
-    .conclusion-box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .conclusion-box-head span { font-size: 13px; font-weight: 700; color: #2a456b; }
-    .conclusion-box-head button { border: 1px solid #2b64a7; background: #fff; color: #1f2f46; border-radius: 8px; padding: 6px 10px; font-weight: 600; cursor: pointer; }
-    #qc-conclusion-only { width: 100%; min-height: 104px; resize: vertical; border: 1px solid #c7d6e8; border-radius: 8px; padding: 8px 10px; font-family: "Outfit", "Segoe UI", Arial, sans-serif; font-size: 14px; color: #1f2f46; background: #fff; }
-    #qc-conclusion-only:focus { outline: 2px solid #9ec3f3; outline-offset: 0; }
-    #report-editor { height: 100%; overflow: auto; border: 1px solid #d6dfeb; border-radius: 10px; padding: 12px; background: #fff; }
-    #report-editor:focus { outline: 2px solid #9ec3f3; outline-offset: 0; }
+    
+    /* Panels */
+    .panel { 
+      background: #fff; 
+      border: 1px solid #e2e8f0; 
+      border-radius: 12px; 
+      display: flex; 
+      flex-direction: column; 
+      min-height: 0;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      overflow: hidden;
+    }
+    .panel-head { 
+      padding: 12px 16px; 
+      border-bottom: 1px solid #e2e8f0; 
+      font-weight: 700; 
+      display: flex; 
+      justify-content: space-between; 
+      align-items: center;
+      background: linear-gradient(to right, #f8fafc, #ffffff);
+    }
+    .panel-head-left { display: flex; align-items: center; gap: 12px; }
+    .panel-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .panel-icon svg { width: 16px; height: 16px; }
+    .panel-icon.blue { background: #dbeafe; color: #1d4ed8; }
+    .panel-icon.purple { background: #f3e8ff; color: #7c3aed; }
+    .panel-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: #0f172a; }
+    .panel-head .subtitle { margin: 2px 0 0; font-size: 12px; color: #64748b; font-weight: 400; }
+    .panel-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .panel-badge .pulse { width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .panel-body { padding: 12px; min-height: 0; overflow: hidden; }
+    
+	    /* Report Pane */
+	    .panel-body.report-pane { display: grid; grid-template-rows: auto 1fr; gap: 12px; }
+	    .conclusion-box { border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; padding: 12px; display: grid; gap: 10px; }
+	    .conclusion-box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+	    .conclusion-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+	    .conclusion-box-head span { font-size: 14px; font-weight: 700; color: #0f172a; }
+	    .conclusion-box-head button { 
+	      border: 1px solid #cbd5e1; 
+	      background: #fff; 
+	      color: #334155; 
+      border-radius: 8px; 
+      padding: 8px 12px; 
+      font-weight: 600; 
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    .conclusion-box-head button:hover { background: #f8fafc; border-color: #94a3b8; }
+    #qc-conclusion-only { width: 100%; min-height: 120px; resize: vertical; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; font-family: "Outfit", "Segoe UI", Arial, sans-serif; font-size: 14px; color: #1f2f46; background: #fff; }
+    #qc-conclusion-only:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
+    #report-editor { height: 100%; overflow: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; background: #f8fafc; font-family: monospace; font-size: 12px; }
+    #report-editor:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); background: #fff; }
 
-    .docs-wrap { display: grid; grid-template-rows: auto auto 1fr; gap: 8px; height: 100%; }
-    .doc-select-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 8px; align-items: center; }
+    /* Documents */
+    .docs-wrap { display: grid; grid-template-rows: auto auto 1fr; gap: 10px; height: 100%; }
+    .doc-select-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; align-items: center; }
     #doc-select {
       width: 100%;
       min-width: 0;
-      padding: 8px 10px;
-      border: 1px solid #b4c6de;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
       border-radius: 8px;
       background: #fff;
       color: #1f2f46;
       font-size: 14px;
+      transition: all 0.2s;
     }
+    #doc-select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
     .doc-select-row button {
-      border: 1px solid #b4c6de;
+      border: 1px solid #cbd5e1;
       background: #fff;
-      color: #24558f;
+      color: #334155;
       border-radius: 8px;
-      padding: 7px 10px;
+      padding: 10px 12px;
       cursor: pointer;
       font-size: 13px;
       font-weight: 600;
-      min-width: 72px;
+      min-width: 80px;
       white-space: nowrap;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
+    .doc-select-row button:hover { background: #f8fafc; border-color: #94a3b8; }
+    .doc-select-row button svg { width: 14px; height: 14px; }
     #doc-selected-name {
-      color: #587296;
+      color: #64748b;
       font-size: 12px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    #doc-preview-container { width: 100%; height: 100%; border: 1px solid #d6dfeb; border-radius: 10px; background: #fff; overflow: hidden; }
+    #doc-preview-container { width: 100%; height: 100%; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; overflow: hidden; }
     #doc-preview { width: 100%; height: 100%; border: 0; background: #fff; }
-    #doc-preview-container:fullscreen { border-radius: 0; border: 0; background: #0b1220; }
+    #doc-preview-container:fullscreen { border-radius: 0; border: 0; background: #0f172a; }
     #doc-preview-container:fullscreen #doc-preview { width: 100vw; height: 100vh; }
-    .muted-small { color: #587296; font-size: 12px; }
+    .muted-small { color: #64748b; font-size: 12px; }
+    .doc-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #94a3b8; }
+    .doc-empty svg { width: 48px; height: 48px; margin-bottom: 8px; opacity: 0.5; }
+    .doc-empty p { margin: 0; font-size: 14px; }
 
-    @media (max-width: 1100px) {
-      .layout { grid-template-columns: 1fr; height: auto; }
-      .splitter { display: none; }
+    /* AI Brain Panel */
+    .brain-panel__head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; background: linear-gradient(to right, #f8fafc, #ffffff); }
+    .brain-panel__title { margin: 0; font-size: 14px; font-weight: 700; color: #0f172a; }
+    .brain-panel__actions button {
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: #334155;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    .brain-panel__actions button:hover { background: #f8fafc; border-color: #94a3b8; }
+    .brain-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 16px; }
+    .brain-cell { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; }
+    .brain-k { font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .brain-v { font-size: 16px; color: #0f172a; font-weight: 700; }
+    .brain-conflicts { padding: 0 16px 16px; }
+    .brain-list { margin: 8px 0 0; padding-left: 20px; }
+    .brain-submit { padding: 0 16px 16px; }
+    .brain-subtitle { margin: 0 0 12px; font-size: 14px; font-weight: 700; color: #0f172a; }
+    .case-review-panel { display: grid; gap: 12px; }
+    .case-review-row { display: grid; gap: 6px; }
+    .case-review-label { font-size: 13px; font-weight: 600; color: #334155; }
+    .case-review-row select,
+    .case-review-row textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: "Outfit", "Segoe UI", Arial, sans-serif;
+      transition: all 0.2s;
+    }
+    .case-review-row select:focus,
+    .case-review-row textarea:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1); }
+    .case-review-actions button {
+      border: none;
+      background: #2563eb;
+      color: #fff;
+      border-radius: 8px;
+      padding: 12px 16px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+	    .case-review-actions button:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2); }
+
+	    /* AI Progress */
+	    details.ai-progress {
+	      margin: 12px 24px 0;
+	      border: 1px solid #e2e8f0;
+	      border-radius: 14px;
+	      background: rgba(255, 255, 255, 0.96);
+	      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+	      overflow: hidden;
+	    }
+	    details.ai-progress > summary {
+	      cursor: pointer;
+	      list-style: none;
+	      padding: 12px 16px;
+	      display: flex;
+	      justify-content: space-between;
+	      align-items: center;
+	      gap: 12px;
+	      font-weight: 800;
+	      color: #0f172a;
+	      user-select: none;
+	    }
+	    details.ai-progress > summary::-webkit-details-marker { display: none; }
+	    details.ai-progress[open] > summary { border-bottom: 1px solid #e2e8f0; }
+	    .ai-progress-body { padding: 12px 16px 14px; display: grid; gap: 12px; }
+	    .ai-progress-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+	    .ai-progress-actions button {
+	      border: 1px solid #cbd5e1;
+	      background: #fff;
+	      color: #334155;
+	      border-radius: 10px;
+	      padding: 8px 12px;
+	      cursor: pointer;
+	      font-weight: 700;
+	      font-size: 13px;
+	      transition: all 0.2s;
+	    }
+	    .ai-progress-actions button:hover { background: #f8fafc; border-color: #94a3b8; }
+	    .ai-progress-events {
+	      margin: 8px 0 0;
+	      padding-left: 18px;
+	      max-height: 18vh;
+	      overflow: auto;
+	    }
+
+	    @media (max-width: 1100px) {
+	      .layout { grid-template-columns: 1fr; height: auto; }
+	      .splitter { display: none; }
       .panel { min-height: 420px; }
       .doc-select-row { grid-template-columns: 1fr 1fr 1fr 1fr; }
       .doc-select-row button { min-width: 0; }
+      .topbar { flex-direction: column; align-items: start; }
+      .actions { width: 100%; }
     }
   </style>
   <script>window.learningToolsRuntime = window.learningToolsRuntime || {};</script>
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <h2>Auditor QC Review</h2>
-      <div class="meta" id="qc-claim-meta">Claim: -</div>
+    <div class="topbar-left">
+      <div class="topbar-icon">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      </div>
+      <div>
+        <h2>Auditor QC Review</h2>
+        <div class="meta" id="qc-claim-meta">
+          <span class="meta-badge"><span class="dot"></span>Claim: -</span>
+        </div>
+      </div>
     </div>
     <div class="actions">
-      <button type="button" class="soft" id="qc-back-btn">Back</button>
-      <button type="button" class="soft" id="qc-reload-btn">Reload</button>
-      <button type="button" class="soft" id="qc-send-back-btn">Send Back</button>
-      <button type="button" class="soft" id="qc-run-rules-btn">Run Rules Again</button>
-      <button type="button" class="soft" id="qc-generate-conclusion-btn">Generate Conclusion Only</button>
-      <button type="button" class="soft" id="qc-run-decide-btn">Run AI Decide</button>
-      <button type="button" id="qc-save-btn">Save HTML</button>
-      <button type="button" id="qc-save-mark-btn">Save + Mark QC Done</button>
-      <button type="button" class="soft" id="qc-final-query-btn">Final Query</button>
-      <button type="button" class="soft" id="qc-final-reject-btn">Final Reject</button>
-      <button type="button" id="qc-final-approve-btn">Final Approve</button>
+      <button type="button" class="soft" id="qc-back-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+        Back
+      </button>
+      <button type="button" class="soft" id="qc-reload-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+        Reload
+      </button>
+      <button type="button" class="warning" id="qc-send-back-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+        Send Back
+      </button>
+      <div class="action-divider"></div>
+      <button type="button" id="qc-save-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+        Save HTML
+      </button>
+      <button type="button" id="qc-save-mark-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+        Save + Mark QC Done
+      </button>
+      <button type="button" class="success" id="qc-final-approve-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        Final Approve
+      </button>
+      <button type="button" class="danger" id="qc-final-reject-btn">
+        <svg class="btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+        Final Reject
+      </button>
     </div>
   </header>
   <p id="qc-msg"></p>
-  <main class="layout" id="qc-layout">
-    <section class="panel">
-      <div class="panel-head">
-        <span>Doctor HTML</span>
-        <span class="muted-small" id="qc-report-source">source: doctor</span>
+  <section class="brain-panel" id="qc-brain-panel" aria-label="AI brain output">
+    <div class="brain-panel__head">
+      <div>
+        <h3 class="brain-panel__title">🧠 AI Brain</h3>
+        <div class="muted-small" id="qc-brain-status">Run AI to generate decision + risk + conflicts.</div>
       </div>
-      <div class="panel-body report-pane">
-        <div class="conclusion-box">
-          <div class="conclusion-box-head">
-            <span>Conclusion Only</span>
-            <button type="button" id="qc-apply-conclusion-btn">Apply To Report</button>
-          </div>
-          <textarea id="qc-conclusion-only" placeholder="Run rules again or generate conclusion only..."></textarea>
+      <div class="brain-panel__actions">
+        <button type="button" class="soft" id="qc-brain-run-btn">⚡ Run AI</button>
+      </div>
+    </div>
+    <div class="brain-grid">
+      <div class="brain-cell">
+        <div class="brain-k">Final Decision</div>
+        <div class="brain-v" id="qc-brain-final-decision">-</div>
+      </div>
+      <div class="brain-cell">
+        <div class="brain-k">AI Decision</div>
+        <div class="brain-v" id="qc-brain-ai-decision">-</div>
+      </div>
+      <div class="brain-cell">
+        <div class="brain-k">Confidence</div>
+        <div class="brain-v" id="qc-brain-confidence">-</div>
+      </div>
+      <div class="brain-cell">
+        <div class="brain-k">AI Confidence</div>
+        <div class="brain-v" id="qc-brain-ai-confidence">-</div>
+      </div>
+      <div class="brain-cell">
+        <div class="brain-k">Risk Score</div>
+        <div class="brain-v" id="qc-brain-risk-score">-</div>
+      </div>
+      <div class="brain-cell">
+        <div class="brain-k">Route</div>
+        <div class="brain-v" id="qc-brain-route">-</div>
+      </div>
+    </div>
+    <div class="brain-conflicts">
+      <div class="brain-k">⚠️ Conflicts</div>
+      <ul class="brain-list" id="qc-brain-conflicts">
+        <li class="muted-small">None yet.</li>
+      </ul>
+    </div>
+    <div class="brain-submit">
+      <h4 class="brain-subtitle">👨‍⚕️ Auditor Decision</h4>
+      <div class="case-review-panel">
+        <div class="case-review-row">
+          <label class="case-review-label" for="qc-auditor-action">Action</label>
+          <select id="qc-auditor-action">
+            <option value="approve">✓ Approve</option>
+            <option value="reject">✗ Reject</option>
+            <option value="query" selected>? Query</option>
+          </select>
         </div>
-        <div id="report-editor" contenteditable="true"></div>
+        <div class="case-review-row">
+          <label class="case-review-label" for="qc-auditor-note">Note</label>
+          <textarea id="qc-auditor-note" rows="3" placeholder="Auditor note (required for send-back / recommended for decisions)"></textarea>
+        </div>
+        <div class="link-row case-review-actions">
+          <button type="button" id="qc-auditor-submit-btn">Submit Auditor Decision →</button>
+        </div>
       </div>
+	    </div>
+	  </section>
+	  <details class="ai-progress" id="qc-ai-progress">
+	    <summary>
+	      <span>AI Progress</span>
+	      <span class="muted-small" id="qc-ai-progress-status">Idle</span>
+	    </summary>
+	    <div class="ai-progress-body">
+	      <div class="ai-progress-actions">
+	        <button type="button" id="qc-ai-progress-refresh">Refresh events</button>
+	        <button type="button" id="qc-ai-progress-copy">Copy logs</button>
+	        <button type="button" id="qc-ai-progress-clear">Clear</button>
+	      </div>
+	      <pre class="ai-progress-log" id="qc-ai-progress-log"></pre>
+	      <div>
+	        <div class="muted-small">Latest server workflow events</div>
+	        <ul class="ai-progress-events" id="qc-ai-progress-events">
+	          <li class="muted-small">No events loaded yet.</li>
+	        </ul>
+	      </div>
+	    </div>
+	  </details>
+	  <main class="layout" id="qc-layout">
+	    <section class="panel">
+	      <div class="panel-head">
+	        <div class="panel-head-left">
+          <div class="panel-icon blue">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </div>
+          <div>
+            <h3>Doctor HTML</h3>
+            <div class="subtitle" id="qc-report-source">source: doctor</div>
+          </div>
+        </div>
+        <span class="panel-badge"><span class="pulse"></span>Editable</span>
+      </div>
+	      <div class="panel-body report-pane">
+	        <div class="conclusion-box">
+	          <div class="conclusion-box-head">
+	            <span>📝 Conclusion Only</span>
+	            <div class="conclusion-actions">
+	              <button type="button" id="qc-run-rules-btn">Run Rules Again</button>
+	              <button type="button" id="qc-generate-conclusion-btn">Generate Conclusion Only</button>
+	              <button type="button" id="qc-apply-conclusion-btn">Apply To Report</button>
+	            </div>
+	          </div>
+	          <textarea id="qc-conclusion-only" placeholder="Run rules again or generate conclusion only..."></textarea>
+	        </div>
+	        <div id="report-editor" contenteditable="true"></div>
+	      </div>
     </section>
     <div id="qc-splitter" class="splitter" role="separator" aria-label="Resize panels" aria-orientation="vertical" tabindex="0"></div>
     <aside class="panel">
       <div class="panel-head">
-        <span>Documents</span>
+        <div class="panel-head-left">
+          <div class="panel-icon purple">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <div>
+            <h3>Documents</h3>
+            <div class="subtitle">Preview and review claim documents</div>
+          </div>
+        </div>
         <span class="muted-small" id="qc-doc-count">0</span>
       </div>
       <div class="panel-body docs-wrap">
@@ -167,15 +571,26 @@
           <select id="doc-select">
             <option value="">Select document</option>
           </select>
-          <button type="button" id="doc-preview-btn">Preview</button>
-          <button type="button" id="doc-open-btn">Open</button>
-          <button type="button" id="doc-fullscreen-btn">Full Screen</button>
+          <button type="button" id="doc-preview-btn">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+            Preview
+          </button>
+          <button type="button" id="doc-open-btn">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            Open
+          </button>
+          <button type="button" id="doc-fullscreen-btn">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+            Full Screen
+          </button>
         </div>
         <div class="muted-small" id="doc-selected-name">No document selected.</div>
-        <div id="doc-preview-container"><iframe id="doc-preview" title="Document Preview"></iframe></div>
+        <div id="doc-preview-container">
+          <iframe id="doc-preview" title="Document Preview"></iframe>
+        </div>
       </div>
     </aside>
   </main>
-  <script src="/qc/public/auditor-qc.js?v=20260362"></script>
-</body>
-</html>
+	  <script src="/qc/public/auditor-qc.js?v=20260408.3"></script>
+	</body>
+	</html>

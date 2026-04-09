@@ -812,8 +812,12 @@ def _split_medicine_aliases(value: Any) -> list[str]:
 
 def _load_high_end_medicine_catalog(db: Session) -> list[dict[str, Any]]:
     from app.repositories import medicine_catalog_repo
-    catalog = medicine_catalog_repo.load_high_end_antibiotic_catalog(db, HIGH_END_ANTIBIOTICS)
-    for row in catalog:
+    base_catalog = medicine_catalog_repo.load_high_end_antibiotic_catalog(db, HIGH_END_ANTIBIOTICS) or []
+    enriched: list[dict[str, Any]] = []
+
+    # IMPORTANT: don't append to the list we're iterating over.
+    # Mutating a list during iteration can lead to unbounded growth / hangs.
+    for row in base_catalog:
         medicine_name = _txt(row.get("medicine_name"))
         components = _txt(row.get("components"))
         searchable = "\n".join([medicine_name, components])
@@ -831,9 +835,9 @@ def _load_high_end_medicine_catalog(db: Session) -> list[dict[str, Any]]:
         else:
             display_name = medicine_name or aliases[0]
 
-        catalog.append({"medicine_name": display_name, "aliases": aliases})
+        enriched.append({"medicine_name": display_name, "aliases": aliases})
 
-    return catalog
+    return list(base_catalog) + enriched
 
 
 def _extract_medicine_lookup_candidates(medicine_text: str, evidence_blob: str, limit: int = 25) -> list[str]:
@@ -2392,7 +2396,6 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
         raise ClaimStructuringError(f"failed to save structured data: {exc}") from exc
 
     return _to_response(saved)
-
 
 
 

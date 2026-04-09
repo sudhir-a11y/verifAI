@@ -15,8 +15,17 @@ from app.schemas.auth import UserRole
 from app.schemas.checklist import ChecklistLatestResponse, ChecklistRunRequest, ChecklistRunResponse
 from app.dependencies.access_control import doctor_can_access_claim
 from app.domain.auth.service import AuthenticatedUser
+from app.ai.structuring import (
+    ClaimStructuredDataNotFoundError,
+    generate_claim_structured_data,
+    get_claim_structured_data,
+)
 
 router = APIRouter(tags=["checklist"])
+
+def _diagnosis_missing(value: object) -> bool:
+    t = str(value or "").strip()
+    return (not t) or t == "-"
 
 
 @router.post("/claims/{claim_id}/checklist/evaluate", response_model=ChecklistRunResponse)
@@ -32,10 +41,37 @@ def evaluate_claim_checklist_endpoint(
             raise HTTPException(status_code=403, detail="doctor can access only assigned claims")
 
     try:
+        # Ensure structured data (diagnosis) is auto-generated before checklist runs.
+        actor_id = payload.actor_id or current_user.username
+        try:
+            structured = get_claim_structured_data(db, claim_id)
+        except ClaimStructuredDataNotFoundError:
+            structured = generate_claim_structured_data(
+                db=db,
+                claim_id=claim_id,
+                actor_id=actor_id or current_user.username,
+                use_llm=True,
+                force_refresh=True,
+            )
+        except Exception:
+            structured = None
+
+        if isinstance(structured, dict) and _diagnosis_missing(structured.get("diagnosis")):
+            try:
+                generate_claim_structured_data(
+                    db=db,
+                    claim_id=claim_id,
+                    actor_id=actor_id or current_user.username,
+                    use_llm=True,
+                    force_refresh=True,
+                )
+            except Exception:
+                pass
+
         return evaluate_claim_checklist(
             db=db,
             claim_id=claim_id,
-            actor_id=payload.actor_id or current_user.username,
+            actor_id=actor_id,
             force_source_refresh=payload.force_source_refresh,
         )
     except ClaimNotFoundError as exc:
@@ -59,6 +95,8 @@ def latest_claim_checklist_endpoint(
         return get_latest_claim_checklist(db=db, claim_id=claim_id)
     except ClaimNotFoundError as exc:
         raise HTTPException(status_code=404, detail="claim not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"checklist latest failed: {exc}") from exc
 
 
 @router.post("/checklist/ml/train")

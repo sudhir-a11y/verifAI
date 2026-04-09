@@ -112,6 +112,22 @@ Set these in `.env` to use the same AWS/S3 bucket as legacy QC-BKP:
 
 `auto` uses OpenAI when `OPENAI_API_KEY` is configured; otherwise falls back to local extraction.
 
+## AI reasoning (model optimization)
+
+Set these in `.env` (see `.env.example`) to enable DeepSeek primary reasoning with conditional GPT fallback:
+
+- `DEEPSEEK_API_KEY` (primary reasoner)
+- `AI_GPT_FALLBACK_CONFIDENCE_THRESHOLD`, `AI_GPT_SKIP_CONFIDENCE_THRESHOLD` (fallback gate)
+- `OPENAI_API_KEY` (only required when fallback is triggered)
+
+## Final decision ML (Doctor + Auditor)
+
+- Train (manual): `python ml/train_model.py`
+- API (super_admin): `POST /api/v1/ml/final-decision/train`
+- Predict (debug): `GET /api/v1/claims/{claim_id}/ml/final-decision/predict`
+
+`POST /api/v1/claims/{claim_id}/decide` will include `ml_prediction` when a trained model is available.
+
 
 ## OCR-first preprocessing
 

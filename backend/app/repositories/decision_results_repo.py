@@ -46,6 +46,32 @@ def get_latest_decision_meta_for_claim(db: Session, claim_id: UUID) -> dict[str,
     return dict(row) if row is not None else None
 
 
+def get_latest_decision_row_for_claim(db: Session, claim_id: UUID) -> dict[str, Any] | None:
+    """Return latest decision row including decision_payload for downstream generators."""
+    row = db.execute(
+        text(
+            """
+            SELECT
+                id,
+                recommendation,
+                route_target,
+                manual_review_required,
+                review_priority,
+                explanation_summary,
+                decision_payload,
+                generated_by,
+                generated_at
+            FROM decision_results
+            WHERE claim_id = :claim_id
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """
+        ),
+        {"claim_id": str(claim_id)},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
 def delete_by_claim_id(db: Session, *, claim_id: str) -> int:
     return int(
         db.execute(text("DELETE FROM decision_results WHERE claim_id = :claim_id"), {"claim_id": claim_id}).rowcount or 0

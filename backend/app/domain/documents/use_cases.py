@@ -827,7 +827,11 @@ def get_document_download_url(
             expires_in=expires_in,
         )
 
-    url = generate_download_url(object_key=storage_key, expires_in=expires_in)
+    try:
+        bucket_override = str(metadata.get("bucket") or metadata.get("legacy_s3_bucket") or "").strip() or None
+    except Exception:
+        bucket_override = None
+    url = generate_download_url(object_key=storage_key, expires_in=expires_in, bucket=bucket_override)
     return DocumentDownloadUrlResponse(
         document_id=row["id"],
         storage_key=storage_key,
@@ -890,7 +894,12 @@ def delete_documents(
             deletable_ids.append(doc_uuid)
             continue
         try:
-            delete_object(row["storage_key"])
+            bucket_override = None
+            try:
+                bucket_override = str(metadata.get("bucket") or metadata.get("legacy_s3_bucket") or "").strip() or None
+            except Exception:
+                bucket_override = None
+            delete_object(row["storage_key"], bucket=bucket_override)
             deletable_ids.append(doc_uuid)
         except (StorageConfigError, StorageOperationError):
             failed_ids.append(doc_uuid)
@@ -935,8 +944,6 @@ def delete_documents(
         failed_document_ids=failed_ids,
         not_found_document_ids=not_found_ids,
     )
-
-
 
 
 

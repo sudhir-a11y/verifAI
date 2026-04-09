@@ -105,6 +105,32 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_RAG_MODEL"),
     )
 
+    # DeepSeek (cost-optimized reasoning / OCR)
+    deepseek_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY"),
+    )
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("DEEPSEEK_BASE_URL"),
+    )
+    deepseek_reasoner_model: str = Field(
+        default="deepseek-reasoner",
+        validation_alias=AliasChoices("DEEPSEEK_REASONER_MODEL"),
+    )
+    deepseek_ocr_model: str = Field(
+        default="deepseek-ocr",
+        validation_alias=AliasChoices("DEEPSEEK_OCR_MODEL"),
+    )
+    deepseek_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("DEEPSEEK_TIMEOUT_SECONDS"),
+    )
+    deepseek_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("DEEPSEEK_ENABLED"),
+    )
+
     ocr_space_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("OCR_SPACE_API_KEY"),
@@ -152,6 +178,14 @@ class Settings(BaseSettings):
             "AWS_ENDPOINT_URL",
             "S3_ENDPOINT_URL",
         ),
+    )
+    aws_textract_async_timeout_seconds: float = Field(
+        default=900.0,
+        validation_alias=AliasChoices("AWS_TEXTRACT_ASYNC_TIMEOUT_SECONDS"),
+    )
+    aws_textract_async_poll_interval_seconds: float = Field(
+        default=1.5,
+        validation_alias=AliasChoices("AWS_TEXTRACT_ASYNC_POLL_INTERVAL_SECONDS"),
     )
 
     # 🎯 Phase 0: Hybrid OCR Configuration (PaddleOCR + OpenAI + Textract + Tesseract)
@@ -226,6 +260,18 @@ class Settings(BaseSettings):
         default=30,
         validation_alias=AliasChoices("ML_AUTO_RETRAIN_MIN_INTERVAL_MINUTES"),
     )
+    ml_final_decision_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ML_FINAL_DECISION_ENABLED"),
+    )
+    ml_final_decision_min_confidence: float = Field(
+        default=0.75,
+        validation_alias=AliasChoices("ML_FINAL_DECISION_MIN_CONFIDENCE"),
+    )
+    ml_final_decision_model_path: str = Field(
+        default="ml/model.pkl",
+        validation_alias=AliasChoices("ML_FINAL_DECISION_MODEL_PATH"),
+    )
     drug_lookup_api_enabled: bool = Field(
         default=True,
         validation_alias=AliasChoices("DRUG_LOOKUP_API_ENABLED"),
@@ -233,6 +279,20 @@ class Settings(BaseSettings):
     drug_lookup_api_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("DRUG_LOOKUP_API_URL"),
+    )
+
+    # Intelligence layer toggles
+    ai_reasoning_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("AI_REASONING_ENABLED"),
+    )
+    ai_gpt_fallback_confidence_threshold: float = Field(
+        default=0.6,
+        validation_alias=AliasChoices("AI_GPT_FALLBACK_CONFIDENCE_THRESHOLD"),
+    )
+    ai_gpt_skip_confidence_threshold: float = Field(
+        default=0.75,
+        validation_alias=AliasChoices("AI_GPT_SKIP_CONFIDENCE_THRESHOLD"),
     )
 
     # APISetu GST (Taxpayer API) integration

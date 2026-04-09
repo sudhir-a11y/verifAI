@@ -48,6 +48,14 @@ ORG_NAME_RE = re.compile(
 )
 
 
+def _normalize_model_name(raw_model: str | None, *, default: str) -> str:
+    configured_model_raw = str(raw_model or "").strip()
+    if not configured_model_raw:
+        return default
+    # Allow env-safe model naming like "gpt-4o-mini" or "gpt-4_1-mini".
+    return configured_model_raw.replace("_", ".")
+
+
 def _looks_like_kyc_document(document_name: str, text: str = "") -> bool:
     name = str(document_name or "")
     if KYC_FILENAME_RE.search(name):
@@ -1406,7 +1414,12 @@ def _extract_text_with_textract_async_s3(
             f"AWS Textract async start failed: missing JobId for {document_name or 'document'}"
         )
 
-    deadline = time.time() + 240.0
+    timeout_s = float(getattr(settings, "aws_textract_async_timeout_seconds", 900.0) or 900.0)
+    timeout_s = max(30.0, min(3600.0, timeout_s))
+    poll_interval_s = float(getattr(settings, "aws_textract_async_poll_interval_seconds", 1.5) or 1.5)
+    poll_interval_s = max(0.5, min(10.0, poll_interval_s))
+
+    deadline = time.time() + timeout_s
     next_token: str | None = None
     all_blocks: list[Any] = []
     pages = 0
@@ -1462,9 +1475,9 @@ def _extract_text_with_textract_async_s3(
 
         if time.time() >= deadline:
             raise ExtractionProcessingError(
-                f"AWS Textract async extraction timed out for {document_name or 'document'} (last status: {last_status or 'UNKNOWN'})"
+                f"AWS Textract async extraction timed out after {timeout_s:.0f}s for {document_name or 'document'} (last status: {last_status or 'UNKNOWN'})"
             )
-        time.sleep(1.5)
+        time.sleep(poll_interval_s)
 
 
 def _extract_text_with_textract(
@@ -1839,9 +1852,13 @@ def _extract_openai(
             }
         )
 
-    # Force single model for extraction to avoid fallback bursts and keep consistency.
-    configured_model = "gpt-4.1-mini"
-    model_candidates: list[str] = [configured_model]
+    # Prefer configured model, but keep a small fallback list for compatibility across accounts.
+    configured_model = _normalize_model_name(getattr(settings, "openai_model", None), default="gpt-4o-mini")
+    model_candidates: list[str] = []
+    for candidate in [configured_model, "gpt-4o-mini", "gpt-4.1-mini"]:
+        normalized = _normalize_model_name(candidate, default="").strip()
+        if normalized and normalized not in model_candidates:
+            model_candidates.append(normalized)
 
     model_name = configured_model
     parsed: dict[str, Any] | None = None
@@ -2250,9 +2267,22 @@ def run_extraction(
     storage_key: str | None = None,
     s3_bucket: str | None = None,
 ) -> dict[str, Any]:
+    if provider == ExtractionProvider.auto:
+        # Auto mode is intentionally pinned to AWS Textract to avoid local OCR
+        # fallback behavior and keep extraction behavior deterministic.
+        return _extract_aws_textract(
+            document_name,
+            mime_type,
+            payload,
+            storage_key=storage_key,
+            s3_bucket=s3_bucket,
+        )
+
     if provider == ExtractionProvider.local:
         return _extract_local(document_name, mime_type, payload)
     if provider == ExtractionProvider.openai:
+        if not settings.openai_api_key:
+            raise ExtractionConfigError("OPENAI_API_KEY not configured")
         return _extract_openai(
             document_name,
             mime_type,
@@ -2270,27 +2300,4 @@ def run_extraction(
         )
     if provider == ExtractionProvider.hybrid_local:
         return _extract_hybrid_local(document_name, mime_type, payload)
-
-    try:
-        return _extract_aws_textract(
-            document_name,
-            mime_type,
-            payload,
-            storage_key=storage_key,
-            s3_bucket=s3_bucket,
-        )
-    except (ExtractionConfigError, ExtractionProcessingError):
-        pass
-
-    if settings.openai_api_key:
-        try:
-            return _extract_openai(
-                document_name,
-                mime_type,
-                payload,
-                storage_key=storage_key,
-                s3_bucket=s3_bucket,
-            )
-        except (ExtractionConfigError, ExtractionProcessingError):
-            return _extract_local(document_name, mime_type, payload)
-    return _extract_local(document_name, mime_type, payload)
+    raise ExtractionProcessingError(f"unsupported extraction provider: {provider}")
