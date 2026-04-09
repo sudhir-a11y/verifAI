@@ -220,6 +220,51 @@
     return '<span class="status-chip ' + cls + '">' + escapeHtml(status || "-") + "</span>";
   }
 
+  function normalizeHandwritingAnalysis(raw) {
+    const fallback = { status: 'unknown', summary: 'Insufficient handwriting metadata' };
+    if (!raw || typeof raw !== 'object') return fallback;
+    const status = String(raw.status || '').trim().toLowerCase();
+    const summary = String(raw.summary || '').trim();
+    return {
+      status: status || fallback.status,
+      summary: summary || fallback.summary,
+    };
+  }
+
+  function renderHandwritingChip(raw) {
+    const info = normalizeHandwritingAnalysis(raw);
+    let cls = 'info';
+    let label = 'Unknown';
+    if (info.status === 'likely_same') {
+      cls = 'warn';
+      label = 'Fraud Risk (Same)';
+    } else if (info.status === 'different') {
+      cls = 'warn';
+      label = 'Different';
+    } else if (info.status === 'not_applicable') {
+      cls = 'muted';
+      label = 'N/A';
+    } else if (info.status === 'not_available') {
+      cls = 'muted';
+      label = 'No TPR';
+    }
+    return '<span class="status-chip ' + cls + '" title="' + escapeHtml(info.summary || label) + '">' + escapeHtml(label) + '</span>';
+  }
+
+  function handwritingSummaryText(raw) {
+    return normalizeHandwritingAnalysis(raw).summary || '-';
+  }
+
+  function renderHandwritingCell(raw) {
+    const summary = handwritingSummaryText(raw);
+    return (
+      renderHandwritingChip(raw)
+      + '<div class="muted" style="margin-top:4px;font-size:11px;line-height:1.25;">'
+      + escapeHtml(summary)
+      + '</div>'
+    );
+  }
+
   function formatDateTime(value) {
     if (!value) return "-";
     const dt = new Date(value);
@@ -1616,10 +1661,12 @@
     const preferOpenAI = !!opts.preferOpenAI;
     const strictOpenAI = !!opts.strictOpenAI;
     const extractionProviderRaw = String(opts.extractionProvider || 'openai').trim().toLowerCase();
-    const extractionProvider = ['openai'].includes(extractionProviderRaw)
+    const extractionProvider = ['openai', 'deepseek'].includes(extractionProviderRaw)
       ? extractionProviderRaw
       : 'openai';
-    const extractionProviderLabel = extractionProvider === 'openai' ? 'VerifAI' : extractionProvider;
+    const extractionProviderLabel = extractionProvider === 'openai'
+      ? 'VerifAI'
+      : (extractionProvider === 'deepseek' ? 'DeepSeek OCR' : extractionProvider);
     const allowAutoFallback = false;
     const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : function () {};
     const onLog = typeof opts.onLog === 'function' ? opts.onLog : function () {};
@@ -1822,8 +1869,8 @@
       + '<p id="doctor-assigned-msg"></p>'
       + '<p class="muted claim-total" id="doctor-assigned-total">Total claims: 0</p>'
       + '<div class="table-wrap claim-status-table-wrap"><table><thead><tr>'
-      + '<th>Claim ID</th><th>Treatment Type</th><th>Status</th><th>Documents</th><th>Last Upload</th><th>Assigned At</th><th>Allotment Date</th><th>Final Status</th><th>Action</th>'
-      + '</tr></thead><tbody id="doctor-assigned-tbody"><tr><td colspan="9">Loading...</td></tr></tbody></table></div>'
+      + '<th>Claim ID</th><th>Treatment Type</th><th>Status</th><th>Documents</th><th>Last Upload</th><th>Assigned At</th><th>Allotment Date</th><th>Handwriting</th><th>Final Status</th><th>Action</th>'
+      + '</tr></thead><tbody id="doctor-assigned-tbody"><tr><td colspan="10">Loading...</td></tr></tbody></table></div>'
       + '<div class="claim-pagination">'
       + '<div class="claim-pagination__left"><label for="doctor-page-size">Rows</label><select id="doctor-page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></div>'
       + '<div class="claim-pagination__info" id="doctor-page-info">Showing 0-0 of 0</div>'
@@ -1984,6 +2031,7 @@
           + '<td>' + escapeHtml(formatDateTime(c.last_upload)) + '</td>'
           + '<td>' + escapeHtml(formatDateTime(c.assigned_at)) + '</td>'
           + '<td>' + escapeHtml(formatDateOnly(c.allotment_date)) + '</td>'
+          + '<td>' + renderHandwritingCell(c.handwriting_analysis) + '</td>'
           + '<td class="doctor-final-status">' + renderFinalStatus(c.final_status) + '</td>'
           + '<td><div class="doctor-case-actions">'
           + '<button type="button" class="btn-soft" data-open-case="' + escapeHtml(c.external_claim_id || '') + '" data-open-claim-id="' + escapeHtml(c.id || '') + '">Open Case</button>'
@@ -1992,7 +2040,7 @@
           + '</tr>';
       }).join('');
 
-      tbody.innerHTML = rows || '<tr><td colspan="9">No assigned claims found.</td></tr>';
+      tbody.innerHTML = rows || '<tr><td colspan="10">No assigned claims found.</td></tr>';
 
       tbody.querySelectorAll('button[data-open-case]').forEach((btn) => {
         btn.addEventListener('click', async function () {
@@ -2050,7 +2098,7 @@
       await loadRows(true);
     } catch (err) {
       setMessage('doctor-assigned-msg', 'err', err.message);
-      tbody.innerHTML = '<tr><td colspan="8">Failed to load assigned cases.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10">Failed to load assigned cases.</td></tr>';
       updatePaginationUi();
     }
   }
@@ -2089,6 +2137,7 @@
       + '<h3 style="margin-top:16px;">Case Documents</h3>'
       + '<div class="link-row case-detail-actions">'
       + '<button type="button" id="case-analyze-ai">Analyze Admission Need (VerifAI)</button>'
+      + '<button type="button" class="btn-soft" id="case-deepseek-ocr">DeepSeek OCR</button>'
       + '<button type="button" class="btn-soft" id="case-force-ai">Force VerifAI Analyzer</button>'
       + '<button type="button" class="btn-soft" id="case-diagnosis-checklist">Generate Diagnosis Checklist</button>'
       + '<button type="button" id="case-generate-report">Generate Report</button>'
@@ -2112,7 +2161,15 @@
       + '<button type="button" id="case-save-report-full">Save Report</button>'
       + '</div></div>'
       + '<div id="case-report-full-body" class="case-report-full-body"></div>'
-      + '</section>';
+      + '</section>'
+      + '<div id="case-deepseek-ocr-modal" class="modal-backdrop">'
+      + '<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="case-deepseek-ocr-title">'
+      + '<div class="modal-header"><h3 id="case-deepseek-ocr-title">DeepSeek OCR</h3><button type="button" class="btn-soft" id="case-deepseek-ocr-close">Close</button></div>'
+      + '<p class="muted">Run OCR extraction for this claim using DeepSeek provider.</p>'
+      + '<p id="case-deepseek-ocr-msg"></p>'
+      + '<div class="form-row"><label><input type="checkbox" id="case-deepseek-force" style="width:auto"> Force refresh existing extractions</label></div>'
+      + '<div class="link-row"><button type="button" id="case-deepseek-ocr-run">Run DeepSeek OCR</button><button type="button" class="btn-soft" id="case-deepseek-ocr-cancel">Cancel</button></div>'
+      + '</div></div>';
 
     const summaryEl = document.getElementById('case-detail-summary');
     const docsEl = document.getElementById('case-detail-docs');
@@ -2122,6 +2179,7 @@
     const fullReportBodyEl = document.getElementById('case-report-full-body');
 
     const analyzeBtn = document.getElementById('case-analyze-ai');
+    const deepseekOcrBtn = document.getElementById('case-deepseek-ocr');
     const forceBtn = document.getElementById('case-force-ai');
     const diagnosisChecklistBtn = document.getElementById('case-diagnosis-checklist');
     const diagnosisChecklistResultEl = document.getElementById('case-diagnosis-checklist-result');
@@ -2131,10 +2189,16 @@
     const backFromFullBtn = document.getElementById('case-report-back');
     const statusBtn = document.getElementById('case-change-status');
     const sendBackBtn = document.getElementById('case-send-back');
-    const actionButtons = [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn, sendBackBtn].filter(Boolean);
+    const deepseekModalEl = document.getElementById('case-deepseek-ocr-modal');
+    const deepseekModalMsgEl = document.getElementById('case-deepseek-ocr-msg');
+    const deepseekModalCloseBtn = document.getElementById('case-deepseek-ocr-close');
+    const deepseekModalCancelBtn = document.getElementById('case-deepseek-ocr-cancel');
+    const deepseekModalRunBtn = document.getElementById('case-deepseek-ocr-run');
+    const deepseekForceEl = document.getElementById('case-deepseek-force');
+    const actionButtons = [analyzeBtn, deepseekOcrBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn, sendBackBtn].filter(Boolean);
 
     if (isAuditorRole) {
-      [analyzeBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn].forEach(function (btn) {
+      [analyzeBtn, deepseekOcrBtn, forceBtn, diagnosisChecklistBtn, reportBtn, saveReportBtn, saveReportFullBtn, statusBtn].forEach(function (btn) {
         if (btn) btn.remove();
       });
       if (diagnosisChecklistResultEl) diagnosisChecklistResultEl.remove();
@@ -2157,6 +2221,24 @@
       actionButtons.forEach((btn) => {
         if (btn) btn.disabled = !!disabled;
       });
+    }
+
+    function setDeepseekModalMessage(type, text) {
+      if (!deepseekModalMsgEl) return;
+      deepseekModalMsgEl.className = type ? ('msg ' + type) : '';
+      deepseekModalMsgEl.textContent = text || '';
+    }
+
+    function openDeepseekOcrModal() {
+      if (!deepseekModalEl) return;
+      if (deepseekForceEl) deepseekForceEl.checked = false;
+      setDeepseekModalMessage('', '');
+      deepseekModalEl.classList.add('open');
+    }
+
+    function closeDeepseekOcrModal() {
+      if (!deepseekModalEl) return;
+      deepseekModalEl.classList.remove('open');
     }
 
     function renderDiagnosisChecklistResult(payload) {
@@ -4851,6 +4933,41 @@
         setActionDisabled(false);
       }
     }
+    if (deepseekOcrBtn) {
+      deepseekOcrBtn.addEventListener('click', function () {
+        openDeepseekOcrModal();
+      });
+    }
+
+    if (deepseekModalCloseBtn) {
+      deepseekModalCloseBtn.addEventListener('click', function () {
+        closeDeepseekOcrModal();
+      });
+    }
+    if (deepseekModalCancelBtn) {
+      deepseekModalCancelBtn.addEventListener('click', function () {
+        closeDeepseekOcrModal();
+      });
+    }
+    if (deepseekModalEl) {
+      deepseekModalEl.addEventListener('click', function (e) {
+        if (e.target === deepseekModalEl) closeDeepseekOcrModal();
+      });
+    }
+    if (deepseekModalRunBtn) {
+      deepseekModalRunBtn.addEventListener('click', async function () {
+        const forceRefresh = !!(deepseekForceEl && deepseekForceEl.checked);
+        closeDeepseekOcrModal();
+        await runPipelineAction(
+          forceRefresh,
+          false,
+          'DeepSeek OCR',
+          false,
+          { extractionProvider: 'deepseek', allowAutoFallback: false }
+        );
+      });
+    }
+
     analyzeBtn.addEventListener('click', async function () {
       await runPipelineAction(false, true, 'Analyze Admission Need (VerifAI)', true, { extractionProvider: 'openai', allowAutoFallback: false });
     });

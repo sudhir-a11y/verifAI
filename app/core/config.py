@@ -61,6 +61,18 @@ class Settings(BaseSettings):
         default="gpt-4o-mini",
         validation_alias=AliasChoices("OPENAI_RAG_MODEL"),
     )
+    deepseek_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY"),
+    )
+    deepseek_model: str = Field(
+        default="deepseek-chat",
+        validation_alias=AliasChoices("DEEPSEEK_MODEL"),
+    )
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com/v1",
+        validation_alias=AliasChoices("DEEPSEEK_BASE_URL"),
+    )
 
     ocr_space_api_key: str | None = Field(
         default=None,

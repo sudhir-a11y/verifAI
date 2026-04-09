@@ -9,6 +9,7 @@ class ExtractionProvider(str, Enum):
     auto = "auto"
     local = "local"
     openai = "openai"
+    deepseek = "deepseek"
     aws_textract = "aws_textract"
 
 

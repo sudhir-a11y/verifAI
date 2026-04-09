@@ -351,9 +351,8 @@ def teamrightworks_case_intake(
                     SET
                         patient_name = COALESCE(NULLIF(:patient_name, ''), patient_name),
                         patient_identifier = COALESCE(NULLIF(:patient_identifier, ''), patient_identifier),
-                        assigned_doctor_id = COALESCE(NULLIF(:assigned_doctor_id, ''), assigned_doctor_id),
-                        status = COALESCE(CAST(:status AS claim_status), status),
-                        completed_at = CASE WHEN CAST(:status AS claim_status) = 'completed'::claim_status THEN COALESCE(completed_at, NOW()) ELSE completed_at END,
+                        -- Manual-only policy: integration intake must not reassign doctors
+                        -- or change claim status/completion for existing claims.
                         priority = COALESCE(:priority, priority),
                         source_channel = COALESCE(NULLIF(:source_channel, ''), source_channel),
                         tags = COALESCE(CAST(:tags_json AS jsonb), tags),
@@ -365,8 +364,6 @@ def teamrightworks_case_intake(
                     "claim_id": str(claim["id"]),
                     "patient_name": (payload.patient_name or "").strip(),
                     "patient_identifier": (payload.patient_identifier or "").strip(),
-                    "assigned_doctor_id": (payload.assigned_doctor_id or "").strip(),
-                    "status": claim_status,
                     "priority": int(payload.priority),
                     "source_channel": source_channel,
                     "tags_json": json.dumps(tags) if payload.tags is not None else None,
@@ -725,6 +722,7 @@ def teamrightworks_case_intake(
                     {
                         "sync_ref": payload.sync_ref,
                         "created_claim": created_claim,
+                        "auto_status_assignment_blocked_for_existing_claim": True,
                         "report_version_no": report_version_no,
                         "recommendation": normalized_recommendation,
                         "feedback_label_saved": feedback_label_saved,

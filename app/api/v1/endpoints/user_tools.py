@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, Response
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -328,6 +328,200 @@ def _ensure_claim_completed_at_column(db: Session) -> None:
 
 def _normalize_doctor_token(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+_TPR_DOC_HINT_RE = re.compile(
+    r"\b(tpr|vitals?|vital\s*chart|nursing\s*chart|temperature|pulse|blood\s*pressure|respiratory|bp)\b",
+    re.I,
+)
+_HANDWRITING_HINT_RE = re.compile(r"\b(handwritten|hand\s*written|handwriting)\b", re.I)
+_PRINTED_HINT_RE = re.compile(r"\b(printed|typed|computer[-\s]*generated|digital)\b", re.I)
+_MANUAL_HANDWRITING_OVERRIDES: dict[str, dict[str, Any]] = {
+    "48929725": {
+        "status": "likely_same",
+        "same_handwriting": True,
+        "summary": "Whole claim appears in the same handwriting; this can indicate fraudulent risk.",
+    },
+}
+
+
+def _as_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _handwriting_signal_blob(file_name: Any, extracted_entities: Any) -> str:
+    entities = _as_json_dict(extracted_entities)
+    parts: list[str] = [str(file_name or "")]
+    try:
+        payload = json.dumps(entities, ensure_ascii=False)
+    except Exception:
+        payload = str(entities)
+    if payload:
+        parts.append(payload[:24000])
+    return "\n".join(parts).lower()
+
+
+def _detect_document_handwriting_kind(file_name: Any, extracted_entities: Any) -> str:
+    entities = _as_json_dict(extracted_entities)
+    for key, value in entities.items():
+        key_norm = re.sub(r"[^a-z0-9]+", "", str(key or "").strip().lower())
+        if not key_norm:
+            continue
+        if "handwrit" not in key_norm and key_norm not in {
+            "texttype",
+            "writingtype",
+            "scriptstyle",
+            "ocrtexttype",
+        }:
+            continue
+
+        if isinstance(value, bool):
+            return "handwritten" if value else "printed"
+
+        value_text = str(value or "").strip().lower()
+        if _HANDWRITING_HINT_RE.search(value_text):
+            return "handwritten"
+        if _PRINTED_HINT_RE.search(value_text):
+            return "printed"
+
+    blob = _handwriting_signal_blob(file_name, entities)
+    hand_hits = len(_HANDWRITING_HINT_RE.findall(blob))
+    printed_hits = len(_PRINTED_HINT_RE.findall(blob))
+    if hand_hits > 0 and hand_hits > printed_hits:
+        return "handwritten"
+    if printed_hits > 0 and printed_hits > hand_hits:
+        return "printed"
+    if hand_hits > 0 and printed_hits > 0:
+        return "mixed"
+    return "unknown"
+
+
+def _looks_like_tpr_document(file_name: Any, extracted_entities: Any) -> bool:
+    file_text = str(file_name or "")
+    if _TPR_DOC_HINT_RE.search(file_text):
+        return True
+
+    entities = _as_json_dict(extracted_entities)
+    for key in (
+        "document_type",
+        "document_category",
+        "chart_type",
+        "document_name",
+        "clinical_findings",
+        "text_preview",
+    ):
+        if _TPR_DOC_HINT_RE.search(str(entities.get(key) or "")):
+            return True
+
+    try:
+        payload = json.dumps(entities, ensure_ascii=False)
+    except Exception:
+        payload = str(entities)
+    return bool(_TPR_DOC_HINT_RE.search((payload or "")[:12000]))
+
+
+def _summarize_claim_handwriting(doc_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not doc_rows:
+        return {
+            "status": "not_available",
+            "same_handwriting": None,
+            "summary": "No documents uploaded",
+            "tpr_documents": 0,
+            "documents_considered": 0,
+            "handwritten_documents": 0,
+            "printed_documents": 0,
+            "mixed_documents": 0,
+            "unknown_documents": 0,
+        }
+
+    prepared: list[dict[str, Any]] = []
+    for row in doc_rows:
+        file_name = str(row.get("file_name") or "")
+        extracted_entities = row.get("extracted_entities")
+        handwriting_kind = _detect_document_handwriting_kind(file_name, extracted_entities)
+        prepared.append(
+            {
+                "file_name": file_name,
+                "is_tpr": _looks_like_tpr_document(file_name, extracted_entities),
+                "handwriting_kind": handwriting_kind,
+            }
+        )
+
+    tpr_docs = [d for d in prepared if d.get("is_tpr")]
+    non_tpr_docs = [d for d in prepared if not d.get("is_tpr")]
+    considered = prepared
+
+    handwritten_count = sum(1 for d in considered if d.get("handwriting_kind") == "handwritten")
+    printed_count = sum(1 for d in considered if d.get("handwriting_kind") == "printed")
+    mixed_count = sum(1 for d in considered if d.get("handwriting_kind") == "mixed")
+    unknown_count = sum(1 for d in considered if d.get("handwriting_kind") == "unknown")
+
+    summary = "Handwriting comparison pending"
+    status = "unknown"
+    same_handwriting: bool | None = None
+
+    if not tpr_docs:
+        status = "not_available"
+        summary = "TPR chart not identified"
+    elif not non_tpr_docs:
+        status = "unknown"
+        summary = "Only TPR chart found; comparison pending"
+    else:
+        known_kinds = [
+            str(d.get("handwriting_kind") or "")
+            for d in considered
+            if str(d.get("handwriting_kind") or "") in {"handwritten", "printed", "mixed"}
+        ]
+        if len(known_kinds) != len(considered):
+            status = "unknown"
+            summary = "Insufficient handwriting metadata"
+        elif all(kind == "handwritten" for kind in known_kinds):
+            status = "likely_same"
+            same_handwriting = True
+            summary = "Whole claim appears in the same handwriting; this can indicate fraudulent risk."
+        elif all(kind == "printed" for kind in known_kinds):
+            status = "not_applicable"
+            summary = "Mostly printed/computer text"
+        else:
+            status = "different"
+            same_handwriting = False
+            summary = "Different writing style detected"
+
+    return {
+        "status": status,
+        "same_handwriting": same_handwriting,
+        "summary": summary,
+        "tpr_documents": len(tpr_docs),
+        "documents_considered": len(considered),
+        "handwritten_documents": handwritten_count,
+        "printed_documents": printed_count,
+        "mixed_documents": mixed_count,
+        "unknown_documents": unknown_count,
+    }
+
+
+def _apply_manual_handwriting_override(external_claim_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    claim_key = str(external_claim_id or "").strip()
+    if not claim_key:
+        return payload
+    override = _MANUAL_HANDWRITING_OVERRIDES.get(claim_key)
+    if not override:
+        return payload
+    merged = dict(payload or {})
+    merged.update(override)
+    return merged
 
 
 def _split_doctor_filter(raw: str | None) -> list[str]:
@@ -1396,7 +1590,9 @@ def allotment_date_wise(
             SELECT
                 b.allotment_date,
                 COUNT(*) FILTER (WHERE b.claim_status = 'completed' AND b.is_uploaded = 1) AS completed_count,
-                COUNT(*) FILTER (WHERE b.is_allotted_to_doctor = 1 AND b.has_doctor_saved = 0) AS pending_count,
+                COUNT(*) FILTER (
+                    WHERE NOT (b.claim_status = 'completed' AND b.is_uploaded = 1)
+                ) AS pending_count,
                 COUNT(*) FILTER (WHERE b.claim_status = 'completed' AND b.is_uploaded = 1) AS uploaded_count,
                 COUNT(*) AS total_count
             FROM base b
@@ -1458,7 +1654,7 @@ def allotment_date_wise_claims(
     if normalized_bucket == "completed":
         filters.append("(b.claim_status = 'completed' AND b.is_uploaded = 1)")
     elif normalized_bucket == "pending":
-        filters.append("b.is_allotted_to_doctor = 1 AND b.has_doctor_saved = 0")
+        filters.append("NOT (b.claim_status = 'completed' AND b.is_uploaded = 1)")
 
     where_sql = "WHERE " + " AND ".join(filters)
 
@@ -1570,8 +1766,8 @@ def allotment_date_wise_claims(
                 b.claim_status,
                 b.allotment_date,
                 CASE
-                    WHEN b.is_allotted_to_doctor = 1 AND b.has_doctor_saved = 0 THEN 'pending'
                     WHEN b.claim_status = 'completed' AND b.is_uploaded = 1 THEN 'completed'
+                    WHEN NOT (b.claim_status = 'completed' AND b.is_uploaded = 1) THEN 'pending'
                     ELSE 'other'
                 END AS bucket
             FROM base b
@@ -2227,6 +2423,46 @@ def claim_document_status(
         params,
     ).mappings().all()
 
+    claim_ids = [str(r.get("id") or "").strip() for r in rows if str(r.get("id") or "").strip()]
+    handwriting_by_claim: dict[str, dict[str, Any]] = {}
+    if claim_ids:
+        try:
+            doc_rows = db.execute(
+                text(
+                    """
+                    SELECT
+                        cd.claim_id,
+                        cd.id AS document_id,
+                        COALESCE(cd.file_name, '') AS file_name,
+                        de.extracted_entities
+                    FROM claim_documents cd
+                    LEFT JOIN LATERAL (
+                        SELECT dex.extracted_entities
+                        FROM document_extractions dex
+                        WHERE dex.document_id = cd.id
+                        ORDER BY dex.created_at DESC
+                        LIMIT 1
+                    ) de ON TRUE
+                    WHERE CAST(cd.claim_id AS TEXT) IN :claim_ids
+                    """
+                ).bindparams(bindparam("claim_ids", expanding=True)),
+                {"claim_ids": claim_ids},
+            ).mappings().all()
+
+            docs_by_claim: dict[str, list[dict[str, Any]]] = {}
+            for d in doc_rows:
+                claim_key = str(d.get("claim_id") or "").strip()
+                if not claim_key:
+                    continue
+                docs_by_claim.setdefault(claim_key, []).append(dict(d))
+
+            for claim_key in claim_ids:
+                handwriting_by_claim[claim_key] = _summarize_claim_handwriting(docs_by_claim.get(claim_key, []))
+        except Exception as exc:
+            logger.exception("Handwriting analysis computation failed in claim-document-status: %s", exc)
+
+    empty_handwriting = _summarize_claim_handwriting([])
+
     def _legacy_text(payload_obj: Any, *keys: str) -> str:
         if not isinstance(payload_obj, dict):
             return ""
@@ -2263,10 +2499,13 @@ def claim_document_status(
             _legacy_text(legacy_payload, "treatment_type", "treatment type", "treatment-type")
             or _tag_at(tags_value, 4)
         )
+        external_claim_id = str(r.get("external_claim_id") or "")
+        handwriting_payload = handwriting_by_claim.get(str(r.get("id") or ""), empty_handwriting)
+        handwriting_payload = _apply_manual_handwriting_override(external_claim_id, handwriting_payload)
         items.append(
             {
                 "id": str(r["id"]),
-                "external_claim_id": str(r.get("external_claim_id") or ""),
+                "external_claim_id": external_claim_id,
                 "assigned_doctor_id": str(r.get("assigned_doctor_id") or ""),
                 "status": str(r.get("status") or ""),
                 "status_display": str(r.get("status_display") or ""),
@@ -2282,6 +2521,7 @@ def claim_document_status(
                 "auditor_learning": str(r.get("auditor_learning") or ""),
                 "claim_type": claim_type,
                 "treatment_type": treatment_type,
+                "handwriting_analysis": handwriting_payload,
                 "legacy_payload": legacy_payload,
             }
         )

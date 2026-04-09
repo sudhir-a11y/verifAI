@@ -1351,6 +1351,71 @@ def _extract_local(document_name: str, mime_type: str, payload: bytes) -> dict[s
     }
 
 
+def _build_medical_extraction_prompt(safe_name: str, safe_mime: str, text_source: str) -> str:
+    return (
+        "Extract structured data from this medical claim document with strict segregation. Return strict JSON only.\n\n"
+        "JSON schema:\n"
+        "{\n"
+        '  "extracted_entities": {\n'
+        '    "name": "",\n'
+        '    "hospital_name": "",\n'
+        '    "treating_doctor": "",\n'
+        '    "doctor_registration_number": "",\n'
+        '    "admission_date": "",\n'
+        '    "discharge_date": "",\n'
+        '    "diagnosis": "",\n'
+        '    "chief_complaints_at_admission": "",\n'
+        '    "major_diagnostic_finding": "",\n'
+        '    "alcoholism_history": "",\n'
+        '    "claim_amount": "",\n'
+        '    "clinical_findings": "",\n'
+        '    "all_investigation_reports_with_values": [\n'
+        '      {"lab_name":"","test_name":"","value":"","unit":"","reference_range":"","flag":"","date":"","line":""}\n'
+        "    ],\n"
+        '    "date_wise_investigation_reports": [\n'
+        '      {"date":"","details":[]}\n'
+        "    ],\n"
+        '    "deranged_investigation": "",\n'
+        '    "medicine_used": "",\n'
+        '    "admission_required": "",\n'
+        '    "final_recommendation": "",\n'
+        '    "conclusion": "",\n'
+        '    "recommendation": "",\n'
+        '    "hospital_address": "",\n'
+        '    "bill_amount": "",\n'
+        '    "detailed_conclusion": ""\n'
+        "  },\n"
+        '  "evidence_refs": [{"type":"text","field":"","snippet":""}],\n'
+        '  "confidence": 0.0\n'
+        "}\n\n"
+        "Segregation rules (strict):\n"
+        "1) Keep `chief_complaints_at_admission` only for symptom/history-at-admission text.\n"
+        "2) Keep `major_diagnostic_finding` only for objective findings during admission/stay (vitals, exam, diagnostic summary), not complaint text.\n"
+        "3) Keep billing/admin/address/provider identity details out of clinical fields.\n"
+        "4) Capture all investigation rows with lab_name, value, unit, reference_range, flag, and date whenever available.\n"
+        "5) Capture medicine lines as complete medicine entries (do not split into tiny tokens).\n"
+        "6) If a value is unavailable, use empty string.\n"
+        "Use attached raw file as primary source of truth. Helper text preview is only secondary context.\n\n"
+        f"Document name: {safe_name}\n"
+        f"MIME type: {safe_mime}\n"
+        f"Text source: {text_source}\n"
+    )
+
+
+def _normalize_extraction_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(confidence) or math.isinf(confidence):
+        return None
+    if confidence > 1.0 and confidence <= 100.0:
+        confidence = confidence / 100.0
+    return max(0.0, min(1.0, confidence))
+
+
 def _extract_openai(
     document_name: str,
     mime_type: str,
@@ -1403,54 +1468,7 @@ def _extract_openai(
         (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif")
     )
 
-    user_prompt = (
-        "Extract structured data from this medical claim document with strict segregation. Return strict JSON only.\n\n"
-        "JSON schema:\n"
-        "{\n"
-        '  "extracted_entities": {\n'
-        '    "name": "",\n'
-        '    "hospital_name": "",\n'
-        '    "treating_doctor": "",\n'
-        '    "doctor_registration_number": "",\n'
-        '    "admission_date": "",\n'
-        '    "discharge_date": "",\n'
-        '    "diagnosis": "",\n'
-        '    "chief_complaints_at_admission": "",\n'
-        '    "major_diagnostic_finding": "",\n'
-        '    "alcoholism_history": "",\n'
-        '    "claim_amount": "",\n'
-        '    "clinical_findings": "",\n'
-        '    "all_investigation_reports_with_values": [\n'
-        '      {"lab_name":"","test_name":"","value":"","unit":"","reference_range":"","flag":"","date":"","line":""}\n'
-        '    ],\n'
-        '    "date_wise_investigation_reports": [\n'
-        '      {"date":"","details":[]}\n'
-        '    ],\n'
-        '    "deranged_investigation": "",\n'
-        '    "medicine_used": "",\n'
-        '    "admission_required": "",\n'
-        '    "final_recommendation": "",\n'
-        '    "conclusion": "",\n'
-        '    "recommendation": "",\n'
-        '    "hospital_address": "",\n'
-        '    "bill_amount": "",\n'
-        '    "detailed_conclusion": ""\n'
-        "  },\n"
-        '  "evidence_refs": [{"type":"text","field":"","snippet":""}],\n'
-        '  "confidence": 0.0\n'
-        "}\n\n"
-        "Segregation rules (strict):\n"
-        "1) Keep `chief_complaints_at_admission` only for symptom/history-at-admission text.\n"
-        "2) Keep `major_diagnostic_finding` only for objective findings during admission/stay (vitals, exam, diagnostic summary), not complaint text.\n"
-        "3) Keep billing/admin/address/provider identity details out of clinical fields.\n"
-        "4) Capture all investigation rows with lab_name, value, unit, reference_range, flag, and date whenever available.\n"
-        "5) Capture medicine lines as complete medicine entries (do not split into tiny tokens).\n"
-        "6) If a value is unavailable, use empty string.\n"
-        "Use attached raw file as primary source of truth. Helper text preview is only secondary context.\n\n"
-        f"Document name: {safe_name}\n"
-        f"MIME type: {safe_mime}\n"
-        f"Text source: {text_source}\n"
-    )
+    user_prompt = _build_medical_extraction_prompt(safe_name, safe_mime, text_source)
 
     user_content: list[dict[str, Any]] = [{"type": "input_text", "text": user_prompt}]
     try:
@@ -1650,17 +1668,7 @@ def _extract_openai(
 
     entities = _normalize_extracted_entities(entities, text or model_output_text)
 
-    if confidence is not None:
-        try:
-            confidence = float(confidence)
-            if math.isnan(confidence) or math.isinf(confidence):
-                confidence = None
-            else:
-                if confidence > 1.0 and confidence <= 100.0:
-                    confidence = confidence / 100.0
-                confidence = max(0.0, min(1.0, confidence))
-        except (TypeError, ValueError):
-            confidence = None
+    confidence = _normalize_extraction_confidence(confidence)
 
     entities.setdefault("text_source", text_source)
     raw_response: dict[str, Any] = {
@@ -1684,6 +1692,135 @@ def _extract_openai(
         "raw_response": raw_response,
     }
 
+
+def _extract_deepseek(
+    document_name: str,
+    mime_type: str,
+    payload: bytes,
+) -> dict[str, Any]:
+    if not settings.deepseek_api_key:
+        raise ExtractionConfigError("DEEPSEEK_API_KEY is not configured")
+
+    text, text_source = _normalize_document_text(document_name, mime_type, payload)
+    text_preview = text[:14000]
+
+    if _looks_like_kyc_document(document_name, text_preview):
+        return {
+            "provider": ExtractionProvider.deepseek.value,
+            "model_name": "deepseek-skip-kyc",
+            "extraction_version": "deepseek-v1",
+            "extracted_entities": _apply_kyc_exclusion(
+                {
+                    "document_name": document_name,
+                    "mime_type": mime_type,
+                    "text_source": text_source,
+                },
+                "KYC/identity document excluded from clinical extraction.",
+            ),
+            "evidence_refs": [
+                {
+                    "type": "policy",
+                    "field": "excluded_document",
+                    "snippet": "KYC/identity document excluded from clinical extraction.",
+                }
+            ],
+            "confidence": 1.0,
+            "raw_response": {
+                "source": "policy",
+                "used_model": "none",
+                "errors": [],
+                "model_output_text": "Skipped DeepSeek extraction for KYC/identity document.",
+            },
+        }
+
+    safe_name = (document_name or "document").strip() or "document"
+    safe_mime = (mime_type or "application/octet-stream").strip().lower() or "application/octet-stream"
+    user_prompt = _build_medical_extraction_prompt(safe_name, safe_mime, text_source)
+    fallback_prompt = user_prompt + "\nDocument text preview:\n" + (text_preview or "(none)")
+
+    model_name = str(settings.deepseek_model or "deepseek-chat").strip() or "deepseek-chat"
+    base_url = str(settings.deepseek_base_url or "https://api.deepseek.com/v1").strip().rstrip("/")
+    url = f"{base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.deepseek_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    parsed: dict[str, Any] | None = None
+    model_output_text = ""
+    last_body: dict[str, Any] | None = None
+    errors: list[str] = []
+
+    payload_json = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a medical-claim extraction service. Return strict JSON only with extracted_entities, evidence_refs, confidence.",
+            },
+            {"role": "user", "content": fallback_prompt},
+        ],
+    }
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            response = client.post(url, headers=headers, json=payload_json)
+            response.raise_for_status()
+        body = response.json()
+        if isinstance(body, dict):
+            last_body = body
+            model_name = str(body.get("model") or model_name)
+        model_output_text = _extract_openai_response_text(body)
+        if model_output_text:
+            parsed = _parse_json_payload(model_output_text)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        detail = ""
+        try:
+            detail = (exc.response.text or "")[:800] if exc.response is not None else ""
+        except Exception:
+            detail = ""
+        errors.append(f"HTTP {status}: {detail}")
+    except Exception as exc:
+        errors.append(str(exc))
+
+    if parsed is None and model_output_text:
+        parsed = _parse_unstructured_claim_extraction(model_output_text)
+
+    if parsed is None:
+        raise ExtractionProcessingError(
+            "DeepSeek extraction failed. "
+            f"model={model_name}; "
+            f"errors={errors[:3] or ['none']}"
+        )
+
+    entities = parsed.get("extracted_entities", {}) if isinstance(parsed, dict) else {}
+    evidence = _normalize_evidence_refs(parsed.get("evidence_refs", []) if isinstance(parsed, dict) else [])
+    confidence = parsed.get("confidence") if isinstance(parsed, dict) else None
+
+    entities = _normalize_extracted_entities(entities, text or model_output_text)
+    confidence = _normalize_extraction_confidence(confidence)
+    entities.setdefault("text_source", text_source)
+
+    raw_response: dict[str, Any] = {
+        "source": "chat.completions",
+        "used_model": model_name,
+        "errors": errors,
+        "model_output_text": model_output_text,
+    }
+    if isinstance(last_body, dict):
+        raw_response["response_json"] = last_body
+
+    return {
+        "provider": ExtractionProvider.deepseek.value,
+        "model_name": model_name,
+        "extraction_version": "deepseek-v1",
+        "extracted_entities": entities,
+        "evidence_refs": evidence,
+        "confidence": confidence,
+        "raw_response": raw_response,
+    }
+
+
 def run_extraction(
     provider: ExtractionProvider,
     document_name: str,
@@ -1703,6 +1840,8 @@ def run_extraction(
             storage_key=storage_key,
             s3_bucket=s3_bucket,
         )
+    if provider == ExtractionProvider.deepseek:
+        return _extract_deepseek(document_name, mime_type, payload)
     if provider == ExtractionProvider.aws_textract:
         return _extract_aws_textract(
             document_name,
