@@ -89,7 +89,7 @@ class ClaimReportGrammarCheckResponse(BaseModel):
     model: str | None = None
     notes: str | None = None
 class ClaimStructuredDataRequest(BaseModel):
-    use_llm: bool = True
+    use_llm: bool = False
     force_refresh: bool = True
     actor_id: str | None = Field(default=None, max_length=100)
 
@@ -143,7 +143,7 @@ class ClaimReportAIGenerateRequest(BaseModel):
     report_status: str = Field(default="draft", max_length=30)
     save: bool = True
     auto_generate_structured: bool = True
-    use_llm: bool = True
+    use_llm: bool = False
     force_refresh: bool = False
 
 
@@ -157,7 +157,7 @@ class ClaimReportAIGenerateResponse(BaseModel):
 
 
 class ClaimDecideRequest(BaseModel):
-    use_llm: bool = True
+    use_llm: bool = False
     force_refresh: bool = False
     auto_advance: bool = False
     auto_generate_report: bool = False
@@ -165,7 +165,7 @@ class ClaimDecideRequest(BaseModel):
 
 
 class ClaimPrepareRequest(BaseModel):
-    use_llm: bool = True
+    use_llm: bool = False
     force_refresh: bool = False
     actor_id: str | None = Field(default=None, max_length=100)
 

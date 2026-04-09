@@ -2268,15 +2268,9 @@ def run_extraction(
     s3_bucket: str | None = None,
 ) -> dict[str, Any]:
     if provider == ExtractionProvider.auto:
-        # Auto mode is intentionally pinned to AWS Textract to avoid local OCR
-        # fallback behavior and keep extraction behavior deterministic.
-        return _extract_aws_textract(
-            document_name,
-            mime_type,
-            payload,
-            storage_key=storage_key,
-            s3_bucket=s3_bucket,
-        )
+        # Cost-optimized default: page-wise hybrid routing (Paddle/local first,
+        # GPT Vision only for handwriting, Textract as fallback).
+        return _extract_hybrid_local(document_name, mime_type, payload)
 
     if provider == ExtractionProvider.local:
         return _extract_local(document_name, mime_type, payload)

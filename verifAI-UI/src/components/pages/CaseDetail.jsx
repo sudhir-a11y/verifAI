@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../app/auth";
 import { formatDateTime } from "../../lib/format";
-import { generateClaimStructuredData, getClaim, getClaimStructuredData, updateClaimStatus } from "../../services/claims";
+import { generateClaimStructuredData, getClaim, getClaimStructuredData, getLatestClaimDecision, updateClaimStatus } from "../../services/claims";
 import { listDocuments, getDocumentDownloadUrl } from "../../services/documents";
 import { evaluateClaimChecklist, getLatestClaimChecklist } from "../../services/checklist";
 import { claimDocumentStatus } from "../../services/userTools";
@@ -221,6 +221,7 @@ export default function CaseDetail() {
   const [previewUrl, setPreviewUrl] = useState("");
   const [structuredData, setStructuredData] = useState(null);
   const [workflowEvents, setWorkflowEvents] = useState([]);
+  const [latestDecision, setLatestDecision] = useState(null);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState("");
   const [pipelineStats, setPipelineStats] = useState({
@@ -366,7 +367,7 @@ export default function CaseDetail() {
     setLoading(true);
     setError("");
     try {
-      const [c, d, cl, statusResp, structured, events] = await Promise.all([
+      const [c, d, cl, statusResp, structured, events, latestDecide] = await Promise.all([
         getClaim(claimUuid),
         listDocuments(claimUuid, { limit: 200, offset: 0 }),
         getLatestClaimChecklist(claimUuid).catch(() => ({ found: false, checklist: [], source_summary: {} })),
@@ -383,6 +384,7 @@ export default function CaseDetail() {
           force_refresh: false,
         }).catch(() => null),
         listClaimWorkflowEvents(claimUuid, { limit: 50, offset: 0 }).catch(() => ({ items: [] })),
+        getLatestClaimDecision(claimUuid).catch(() => null),
       ]);
       setClaim(c || null);
       setDocs(Array.isArray(d?.items) ? d.items : []);
@@ -392,6 +394,7 @@ export default function CaseDetail() {
       setDocStatus(row);
       setStructuredData(structured);
       setWorkflowEvents(Array.isArray(events?.items) ? events.items : []);
+      setLatestDecision(latestDecide && typeof latestDecide === "object" ? latestDecide : null);
     } catch (e) {
       setError(String(e?.message || "Failed to load case detail."));
     } finally {
@@ -447,7 +450,7 @@ export default function CaseDetail() {
     setError("");
     try {
       // Ensure diagnosis is auto-generated before checklist (no manual input).
-      await getClaimStructuredData(claimUuid, { auto_generate: true, use_llm: true }).catch(() => null);
+      await getClaimStructuredData(claimUuid, { auto_generate: true, use_llm: false }).catch(() => null);
       const resp = await evaluateClaimChecklist(claimUuid, {
         actor_id: String(user?.username || "").trim() || undefined,
         force_source_refresh: forceRefresh,
@@ -630,7 +633,7 @@ export default function CaseDetail() {
     try {
       const data = await generateClaimStructuredData(claimUuid, {
         actor_id: String(user?.username || "").trim() || undefined,
-        use_llm: true,
+        use_llm: false,
         force_refresh: true,
       });
       const html = buildReportHtmlFromStructuredData(data);
@@ -677,6 +680,57 @@ export default function CaseDetail() {
   }
 
   if (!canUse) return <p className="text-sm text-slate-700">Not available for your role.</p>;
+
+  function normalizeDecision(value) {
+    const v = String(value || "").trim().toLowerCase();
+    if (!v) return "-";
+    if (v === "approve" || v === "approved") return "APPROVE";
+    if (v === "reject" || v === "rejected") return "REJECT";
+    if (v === "query" || v === "need_more_evidence" || v === "manual_review") return "QUERY";
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function numOrNull(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function fmtConfidence(value) {
+    const n = numOrNull(value);
+    return n == null ? "-" : n.toFixed(2);
+  }
+
+  function fmtUsd(value) {
+    const n = numOrNull(value);
+    return n == null ? "$0.0000" : `$${n.toFixed(4)}`;
+  }
+
+  const aiDecision = normalizeDecision(checklist?.ai_decision || latestDecision?.final_status);
+  const aiConfidence = fmtConfidence(
+    typeof checklist?.ai_confidence === "number" ? checklist.ai_confidence : latestDecision?.confidence
+  );
+  const mlPayload = latestDecision?.ml_prediction && typeof latestDecision.ml_prediction === "object"
+    ? latestDecision.ml_prediction
+    : null;
+  const mlDecision = mlPayload?.available ? normalizeDecision(mlPayload?.label) : "-";
+  const mlConfidence = mlPayload?.available ? fmtConfidence(mlPayload?.confidence) : "-";
+  const agreement = aiDecision !== "-" && mlDecision !== "-" ? (aiDecision === mlDecision ? "✅" : "❌") : "-";
+  const isAdmin = role === "super_admin";
+  const usage = (latestDecision?.ai_usage_summary && typeof latestDecision.ai_usage_summary === "object")
+    ? latestDecision.ai_usage_summary
+    : ((latestDecision?.usage && typeof latestDecision.usage === "object") ? latestDecision.usage : {});
+  const modelName = String(usage?.model || latestDecision?.model || "-");
+  const usageTokens = numOrNull(usage?.tokens ?? usage?.total_tokens ?? latestDecision?.tokens);
+  const usageCost = numOrNull(usage?.cost ?? usage?.total_cost ?? latestDecision?.cost);
+  const usageStep = String(usage?.step || usage?.stage || "Report Generation");
+  const costBreakdown = (latestDecision?.ai_cost_breakdown && typeof latestDecision.ai_cost_breakdown === "object")
+    ? latestDecision.ai_cost_breakdown
+    : ((latestDecision?.cost_breakdown && typeof latestDecision.cost_breakdown === "object") ? latestDecision.cost_breakdown : {});
+  const extractionCost = numOrNull(costBreakdown?.extraction) || 0;
+  const structuringCost = numOrNull(costBreakdown?.structuring) || 0;
+  const reasoningCost = numOrNull(costBreakdown?.reasoning) || 0;
+  const reportCost = numOrNull(costBreakdown?.report) || 0;
+  const totalCost = extractionCost + structuringCost + reasoningCost + reportCost;
 
   if (!claimUuid) {
     return (
@@ -776,6 +830,41 @@ export default function CaseDetail() {
 
       {loading ? <p className="text-sm text-slate-600">Loading...</p> : null}
       {error ? <p className="text-sm text-red-600">{error}</p> : null}
+
+      {!loading ? (
+        <section className="space-y-2">
+          <div className="text-sm font-semibold">AI vs ML Analysis</div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+            <div>AI Decision: <span className="font-semibold">{aiDecision}</span></div>
+            <div>AI Confidence: <span className="font-semibold">{aiConfidence}</span></div>
+            <div className="mt-2">ML Decision: <span className="font-semibold">{mlDecision}</span></div>
+            <div>ML Confidence: <span className="font-semibold">{mlConfidence}</span></div>
+            <div className="mt-2">Agreement: <span className="font-semibold">{agreement}</span></div>
+          </div>
+        </section>
+      ) : null}
+
+      {!loading && isAdmin ? (
+        <section className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+              <div className="text-sm font-semibold">AI Usage Summary</div>
+              <div className="mt-2">Model: <span className="font-semibold">{modelName}</span></div>
+              <div>Tokens: <span className="font-semibold">{usageTokens == null ? "-" : Math.round(usageTokens)}</span></div>
+              <div>Cost: <span className="font-semibold">{fmtUsd(usageCost)}</span></div>
+              <div>Step: <span className="font-semibold">{usageStep}</span></div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+              <div className="text-sm font-semibold">Total AI Cost (Claim)</div>
+              <div className="mt-2">Extraction: <span className="font-semibold">{fmtUsd(extractionCost)}</span></div>
+              <div>Structuring: <span className="font-semibold">{fmtUsd(structuringCost)}</span></div>
+              <div>Reasoning: <span className="font-semibold">{fmtUsd(reasoningCost)}</span></div>
+              <div>Report: <span className="font-semibold">{fmtUsd(reportCost)}</span></div>
+              <div className="mt-2">Total: <span className="font-semibold">{fmtUsd(totalCost)}</span></div>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {!loading ? (
         <section className="space-y-2">

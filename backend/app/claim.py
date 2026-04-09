@@ -89,7 +89,7 @@ class ClaimReportGrammarCheckResponse(BaseModel):
     model: str | None = None
     notes: str | None = None
 class ClaimStructuredDataRequest(BaseModel):
-    use_llm: bool = True
+    use_llm: bool = False
     force_refresh: bool = True
     actor_id: str | None = Field(default=None, max_length=100)
 
@@ -137,4 +137,3 @@ class ClaimConclusionGenerateResponse(BaseModel):
     recommendation: str | None = None
     triggered_rules_count: int = 0
     source: str = "rule_engine"
-

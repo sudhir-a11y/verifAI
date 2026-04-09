@@ -2224,7 +2224,7 @@ def get_claim_structured_data(db: Session, claim_id: UUID) -> dict[str, Any]:
     return _to_response(dict(row))
 
 
-def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, use_llm: bool = True, force_refresh: bool = True) -> dict[str, Any]:
+def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, use_llm: bool = False, force_refresh: bool = True) -> dict[str, Any]:
     _ensure_table(db)
     if not force_refresh:
         try:
@@ -2396,7 +2396,6 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
         raise ClaimStructuringError(f"failed to save structured data: {exc}") from exc
 
     return _to_response(saved)
-
 
 
 

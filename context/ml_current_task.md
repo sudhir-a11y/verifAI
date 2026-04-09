@@ -1,68 +1,178 @@
-• Your ML model is not replacing the whole AI pipeline. It is a supervised final-decision helper built from your historical
-doctor/auditor outcomes.
+Use PaddleOCR as a local document-reading layer, not as a reasoning model.
 
-What it does
+What to use
 
-- It predicts the likely final claim decision from features already produced by your pipeline.
-- The labels are things like approve, reject, need_more_evidence, manual_review.
-- It is used as an additional signal inside the decision engine, not as the only source of truth.
+- PP-OCR for printed text extraction
+- PP-Structure / PP-StructureV3 for layout, tables, key-value regions, document structure
+- output normalized JSON per page
 
-You can see that in:
+What not to use it for
 
-- backend/app/ml_decision/predictor.py
-- backend/app/ml_decision/feature_engineering.py
-- backend/app/api/v1/endpoints/claims.py:1293
-- backend/app/ai/decision_engine.py:289
+- claim decisioning
+- medico-legal reasoning
+- fraud analysis
+- report writing
 
-Why you built it
+Those should stay with:
 
-1. To learn from real doctor and auditor decisions.
-   - Rules and LLM output are generic.
-   - ML learns your team’s actual patterns from past cases.
-2. To reduce dependence on expensive LLM calls for final decisioning.
-   - Once trained, ML inference is cheap.
-   - It can become a stable decision signal even when LLM confidence is noisy.
-3. To improve consistency.
-   - Doctors/auditors may repeatedly make similar decisions on similar cases.
-   - ML captures that behavior and makes the pipeline more repeatable.
-4. To support fusion, not blind automation.
-   - Your code keeps the hierarchy: auditor > doctor > ML > AI.
-   - So ML is one signal in the final fusion logic, not a fully autonomous replacement.
+- ML for learned decision support
+- DeepSeek for primary reasoning
+- GPT only for fallback / handwriting / report generation
 
-What data it uses
-It uses engineered features such as:
+Recommended architecture
 
-- AI decision
-- AI confidence
-- verification results
-- risk/conflict indicators
-- structured claim fields
+page split
+↓
+page classify
+↓
+printed text page → PaddleOCR
+table-heavy page → Textract or Paddle Structure, whichever is more reliable
+handwritten page → GPT Vision
+↓
+page JSON outputs
+↓
+merge into claim-level structured data
+↓
+ML + DeepSeek reasoning
+↓
+GPT only when needed
 
-See:
+Why this is good
 
-- backend/app/ml_decision/feature_engineering.py
-- backend/app/ml_decision/dataset_builder.py
+1. It removes many OpenAI extraction calls.
+2. It keeps expensive models only for handwritten pages.
+3. It gives you structured outputs earlier, before reasoning.
+4. It separates extraction from reasoning cleanly.
 
-What problem it solves
-Without ML:
+One correction
+Do not keep Textract as the default for every table-heavy page without benchmarking first.
+You should compare:
 
-- you depend mostly on rules + LLM + human overrides
+- Paddle Structure accuracy
+- Textract accuracy
+- cost per page
+- speed
 
-With ML:
+In many cases:
 
-- you add a cheap learned prediction from historical outcomes
-- this helps ranking, triage, and final decision confidence
+- PaddleOCR + PP-Structure can be your default local cheap path
+- Textract becomes fallback for low-quality scans or difficult tables
+- GPT Vision only for handwriting or failure recovery
 
-Important limitation
-Right now ML does not save much cost by itself unless you actually use it to skip or reduce some LLM calls.
-At the moment, it mainly improves decision fusion, not total billing.
+So a better routing policy is:
 
-In one line
-You built the ML model to learn from past claim outcomes and provide a cheap, consistent final-decision signal that complements
-rules, LLM reasoning, and human review.
+if handwriting_high:
+GPT Vision
+elif printed_or_layout_page:
+PaddleOCR + PP-Structure
+if confidence low:
+Textract fallback
+else:
+local parser / PaddleOCR
 
-If you want, I can next explain:
+Best final stack
 
-1. exactly what features go into the ML model
-2. where in the /decide flow it influences the final result
-3. whether the ML model is currently worth keeping or not
+- Extraction/parsing: PaddleOCR first
+- Difficult scanned tables: Textract fallback
+- Handwriting: GPT Vision
+- Decisioning: ML + DeepSeek
+- GPT: fallback reasoning and report generation only
+
+Bottom line
+Yes, this is the right approach.
+Use PaddleOCR as a local OCR and layout parser, not as an LLM. That is one of the best ways to cut your biggest current AI
+cost.
+
+If you want, I can turn this into a concrete implementation plan for your repo with:
+
+1. where PaddleOCR should enter the pipeline
+2. which current OpenAI calls it should replace
+3. the exact routing/fallback logic to implement
+   ========= for reports genration ===================
+   Yes — that is **exactly the right idea**:
+   DeepSeek generates report → **OpenAI button = “Rephrase / polish”**.
+
+Why this is good:
+
+- DeepSeek is strong at **reasoning + draft generation**
+- OpenAI is better at **polish + legal formatting + readability**
+- So use OpenAI **only when user clicks** (not always)
+
+DeepSeek models are designed for **text generation, summarization, and reasoning tasks**, which makes them suitable for drafting reports before optional refinement. ([Oneboard][1])
+
+# Final Architecture
+
+### Default (cheap)
+
+```
+ML → DeepSeek → report
+```
+
+### Optional button
+
+```
+DeepSeek report
+   ↓
+[Rephrase with OpenAI]
+   ↓
+Polished report
+```
+
+---
+
+# UI Design (recommended)
+
+Buttons:
+
+- Run AI (DeepSeek)
+- Rephrase (OpenAI)
+- Improve reasoning (DeepSeek)
+- Regenerate (force)
+
+---
+
+# When user clicks “Rephrase”
+
+Only send:
+
+- generated report text
+- keep decision same
+- no extraction rerun
+
+So fast + cheap.
+
+---
+
+# Important rule
+
+OpenAI should NOT:
+
+- change decision
+- change fields
+- change data
+
+Only:
+
+- rewrite
+- improve grammar
+- medico-legal tone
+
+---
+
+# Final flow
+
+```
+Extraction
+↓
+ML
+↓
+DeepSeek report
+↓
+(optional) OpenAI rephrase
+↓
+final report
+```
+
+This is **best hybrid design**.
+
+[1]: https://oneboard.framer.website/blog/exploring-deepseek-llm-open-source-power-for-text-generation?utm_source=chatgpt.com "Exploring DeepSeek LLM: Open-Source Power for Text Generation"

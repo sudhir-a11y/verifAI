@@ -72,7 +72,6 @@ from app.schemas.doctor_verification import DoctorVerificationResponse, DoctorVe
 from app.schemas.extraction import ExtractionProvider
 from app.dependencies.access_control import doctor_matches_assignment
 from app.domain.auth.service import AuthenticatedUser
-from app.ml_decision import predict_final_decision
 from app.ai.structuring import (
     ClaimStructuredDataNotFoundError,
     ClaimStructuringError,
@@ -569,7 +568,7 @@ def generate_claim_structured_data_endpoint(
 def get_claim_structured_data_endpoint(
     claim_id: UUID,
     auto_generate: bool = Query(default=True),
-    use_llm: bool = Query(default=True),
+    use_llm: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: AuthenticatedUser = Depends(require_roles(UserRole.super_admin, UserRole.user, UserRole.doctor, UserRole.auditor)),
 ) -> ClaimStructuredDataResponse:
@@ -1278,7 +1277,7 @@ def run_claim_decision_endpoint(
         )
     checklist_result["flags"] = flags
 
-    # 5. Optional ML prediction (auditor > doctor > ML > AI)
+    # 5. ML prediction is intentionally disabled for now; keep payload shape stable.
     ml_prediction_payload = {
         "available": False,
         "label": None,
@@ -1286,63 +1285,8 @@ def run_claim_decision_endpoint(
         "probabilities": {},
         "model_version": None,
         "training_examples": 0,
-        "reason": "ml_not_run",
+        "reason": "ml_disabled_by_policy",
     }
-    try:
-        if bool(getattr(settings, "ml_final_decision_enabled", True)):
-            ai_decision_for_ml = (
-                (checklist_result.get("ai_decision") if isinstance(checklist_result, dict) else None)
-                or (checklist_result.get("recommendation") if isinstance(checklist_result, dict) else None)
-            )
-            ai_conf_for_ml = (
-                (checklist_result.get("ai_confidence") if isinstance(checklist_result, dict) else None)
-                or (checklist_result.get("confidence") if isinstance(checklist_result, dict) else None)
-            )
-            risk_score_for_ml, _risk_breakdown = compute_risk_score(
-                checklist_result=checklist_result,
-                registry_verifications=registry_verifications,
-                structured_data=structured,
-                claim_text=None,
-            )
-            conflicts_for_ml = detect_conflicts(
-                ai_decision=str(ai_decision_for_ml or ""),
-                doctor_decision=None,
-                auditor_decision=None,
-                registry_verifications=registry_verifications,
-                risk_score=float(risk_score_for_ml),
-            )
-            conflict_count = len(conflicts_for_ml) if isinstance(conflicts_for_ml, list) else 0
-            rule_hit_count = len(flags) if isinstance(flags, list) else 0
-            amount = structured.get("claim_amount") or structured.get("bill_amount")
-            diagnosis = structured.get("diagnosis")
-            hospital = structured.get("hospital_name") or structured.get("hospital")
-
-            ml_pred = predict_final_decision(
-                db,
-                ai_decision=ai_decision_for_ml,
-                ai_confidence=ai_conf_for_ml,
-                risk_score=risk_score_for_ml,
-                conflict_count=conflict_count,
-                rule_hit_count=rule_hit_count,
-                verifications=registry_verifications,
-                amount=amount,
-                diagnosis=diagnosis,
-                hospital=hospital,
-                min_confidence=float(getattr(settings, "ml_final_decision_min_confidence", 0.75)),
-            )
-            ml_prediction_payload = ml_pred.__dict__
-        else:
-            ml_prediction_payload["reason"] = "ml_disabled"
-    except Exception as exc:
-        ml_prediction_payload = {
-            "available": False,
-            "label": None,
-            "confidence": 0.0,
-            "probabilities": {},
-            "model_version": None,
-            "training_examples": 0,
-            "reason": f"ml_error:{type(exc).__name__}",
-        }
 
     # 6. Run decision engine (AI-only, no human doctor override)
     final = decide_final(

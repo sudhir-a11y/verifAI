@@ -30,7 +30,7 @@ class DocumentStructuringModelError(DocumentStructuringError):
 def structure_document_text(
     ocr_text: str,
     *,
-    use_llm: bool = True,
+    use_llm: bool = False,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Convert OCR text to a small, stable medical JSON structure.
@@ -358,4 +358,3 @@ def _looks_like_date(text: str) -> bool:
         re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", t)
         or re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", t)
     )
-

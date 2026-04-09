@@ -38,7 +38,7 @@ def prepare_claim_for_ai(
     claim_id: UUID,
     actor_id: str,
     force_refresh: bool = False,
-    use_llm: bool = True,
+    use_llm: bool = False,
 ) -> ClaimPrepareResult:
     actor = str(actor_id or "system:prepare").strip() or "system:prepare"
     lock_owner = f"{actor}:prepare"
@@ -83,7 +83,7 @@ def prepare_claim_for_ai(
             db,
             claim_id=claim_id,
             actor_id=actor,
-            provider=ExtractionProvider.aws_textract,
+            provider=ExtractionProvider.hybrid_local,
             force_refresh=bool(force_refresh),
             best_effort=True,
         )

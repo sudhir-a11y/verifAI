@@ -254,6 +254,20 @@
     setMessage('err', 'Missing claim_uuid.');
     throw new Error('Missing claim_uuid');
   }
+  const currentRole = String(
+    localStorage.getItem(STORAGE_KEYS.ACTING_ROLE)
+      || (function () {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEYS.USER);
+          const parsed = raw ? JSON.parse(raw) : null;
+          return parsed && parsed.role ? parsed.role : '';
+        } catch (_err) {
+          return '';
+        }
+      })()
+      || '',
+  ).trim().toLowerCase();
+  const isAdminRole = currentRole === 'super_admin';
 
   const claimMetaEl = document.getElementById('qc-claim-meta');
   const reportSourceEl = document.getElementById('qc-report-source');
@@ -487,7 +501,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           timeoutMs: 20000,
-          body: JSON.stringify({ use_llm: true, force_refresh: false }),
+          body: JSON.stringify({ use_llm: false, force_refresh: false }),
         });
         aiProgress.log('Claim prepare queued.');
       } catch (prepareErr) {
@@ -499,7 +513,7 @@
         headers: { 'Content-Type': 'application/json' },
         timeoutMs: AI_DECIDE_TIMEOUT_MS,
         body: JSON.stringify({
-          use_llm: true,
+          use_llm: false,
           force_refresh: false,
           auto_advance: true,
           auto_generate_report: false,
@@ -594,6 +608,9 @@
     const riskEl = document.getElementById('qc-brain-risk-score');
     const routeEl = document.getElementById('qc-brain-route');
     const conflictsEl = document.getElementById('qc-brain-conflicts');
+    const aiMlEl = document.getElementById('qc-ai-ml-analysis');
+    const usageEl = document.getElementById('qc-ai-usage-summary');
+    const totalCostEl = document.getElementById('qc-ai-total-cost');
 
     const finalDecision = decideResp && decideResp.final_status ? String(decideResp.final_status) : '';
     const route = decideResp && decideResp.route_target ? String(decideResp.route_target) : '';
@@ -607,6 +624,29 @@
     const mlAvailable = !!(mlPred && (mlPred.available === true));
     const mlLabel = mlPred && mlPred.label ? String(mlPred.label) : '';
     const mlConf = mlPred && typeof mlPred.confidence === 'number' ? mlPred.confidence : null;
+
+    function normalizeDecisionLabel(value) {
+      const v = String(value || '').trim().toLowerCase();
+      if (!v) return '-';
+      if (v === 'approve' || v === 'approved') return 'APPROVE';
+      if (v === 'reject' || v === 'rejected') return 'REJECT';
+      if (v === 'query' || v === 'need_more_evidence' || v === 'manual_review') return 'QUERY';
+      return String(value || '').trim().toUpperCase();
+    }
+
+    function formatConfidence(value) {
+      return typeof value === 'number' && Number.isFinite(value) ? String(Number(value).toFixed(2)) : '-';
+    }
+
+    function toNumber(value) {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function formatUsd(value) {
+      const num = toNumber(value);
+      return num == null ? '$0.0000' : ('$' + num.toFixed(4));
+    }
 
     if (statusEl) {
       const mapping = decideResp && decideResp.final_status_mapping ? String(decideResp.final_status_mapping) : '';
@@ -630,6 +670,68 @@
           const msg = c && c.message ? String(c.message) : JSON.stringify(c);
           return '<li>' + escapeHtml(msg) + '</li>';
         }).join('');
+      }
+    }
+
+    if (aiMlEl) {
+      const aiDecisionLabel = normalizeDecisionLabel(aiDecision || finalDecision);
+      const mlDecisionLabel = mlAvailable ? normalizeDecisionLabel(mlLabel) : '-';
+      const agreement = (aiDecisionLabel !== '-' && mlDecisionLabel !== '-')
+        ? (aiDecisionLabel === mlDecisionLabel ? '✅' : '❌')
+        : '-';
+      aiMlEl.innerHTML =
+        '<div class="brain-k">AI vs ML Analysis</div>'
+        + '<div class="muted-small">AI Decision: ' + escapeHtml(aiDecisionLabel)
+        + '<br>AI Confidence: ' + escapeHtml(formatConfidence(aiConfidence != null ? aiConfidence : confidence))
+        + '<br><br>ML Decision: ' + escapeHtml(mlDecisionLabel)
+        + '<br>ML Confidence: ' + escapeHtml(formatConfidence(mlConf))
+        + '<br><br>Agreement: ' + escapeHtml(agreement)
+        + '</div>';
+    }
+
+    if (usageEl) {
+      if (!isAdminRole) {
+        usageEl.style.display = 'none';
+      } else {
+        usageEl.style.display = '';
+        const usage = (decideResp && typeof decideResp.ai_usage_summary === 'object' && decideResp.ai_usage_summary)
+          || (decideResp && typeof decideResp.usage === 'object' && decideResp.usage)
+          || {};
+        const modelText = String(usage.model || decideResp.model || '-');
+        const tokensVal = toNumber(usage.tokens) ?? toNumber(usage.total_tokens) ?? toNumber(decideResp.tokens);
+        const costVal = toNumber(usage.cost) ?? toNumber(usage.total_cost) ?? toNumber(decideResp.cost);
+        const stepText = String(usage.step || usage.stage || 'Report Generation');
+        usageEl.innerHTML =
+          '<div class="brain-k">AI Usage Summary</div>'
+          + '<div class="muted-small">Model: ' + escapeHtml(modelText || '-')
+          + '<br>Tokens: ' + escapeHtml(tokensVal == null ? '-' : String(Math.round(tokensVal)))
+          + '<br>Cost: ' + escapeHtml(formatUsd(costVal))
+          + '<br>Step: ' + escapeHtml(stepText)
+          + '</div>';
+      }
+    }
+
+    if (totalCostEl) {
+      if (!isAdminRole) {
+        totalCostEl.style.display = 'none';
+      } else {
+        totalCostEl.style.display = '';
+        const costs = (decideResp && typeof decideResp.ai_cost_breakdown === 'object' && decideResp.ai_cost_breakdown)
+          || (decideResp && typeof decideResp.cost_breakdown === 'object' && decideResp.cost_breakdown)
+          || {};
+        const extractionCost = toNumber(costs.extraction) || 0;
+        const structuringCost = toNumber(costs.structuring) || 0;
+        const reasoningCost = toNumber(costs.reasoning) || 0;
+        const reportCost = toNumber(costs.report) || 0;
+        const totalCost = extractionCost + structuringCost + reasoningCost + reportCost;
+        totalCostEl.innerHTML =
+          '<div class="brain-k">Total AI Cost (Claim)</div>'
+          + '<div class="muted-small">Extraction: ' + escapeHtml(formatUsd(extractionCost))
+          + '<br>Structuring: ' + escapeHtml(formatUsd(structuringCost))
+          + '<br>Reasoning: ' + escapeHtml(formatUsd(reasoningCost))
+          + '<br>Report: ' + escapeHtml(formatUsd(reportCost))
+          + '<br><br>Total: ' + escapeHtml(formatUsd(totalCost))
+          + '</div>';
       }
     }
   }

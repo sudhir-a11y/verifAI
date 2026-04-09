@@ -27,17 +27,21 @@ export async function updateClaimStatus(claimId, { status, actor_id, note } = {}
   });
 }
 
-export async function generateClaimStructuredData(claimId, { actor_id, use_llm = true, force_refresh = true } = {}) {
+export async function generateClaimStructuredData(claimId, { actor_id, use_llm = false, force_refresh = true } = {}) {
   return apiFetch(`/api/v1/claims/${encodeURIComponent(claimId)}/structured-data`, {
     method: "POST",
     body: { actor_id, use_llm: !!use_llm, force_refresh: !!force_refresh },
   });
 }
 
-export async function getClaimStructuredData(claimId, { auto_generate = false, use_llm = true } = {}) {
+export async function getClaimStructuredData(claimId, { auto_generate = false, use_llm = false } = {}) {
   const params = new URLSearchParams();
   if (auto_generate) params.set("auto_generate", "true");
   if (use_llm === false) params.set("use_llm", "false");
   const qs = params.toString();
   return apiFetch(`/api/v1/claims/${encodeURIComponent(claimId)}/structured-data${qs ? `?${qs}` : ""}`);
+}
+
+export async function getLatestClaimDecision(claimId) {
+  return apiFetch(`/api/v1/claims/${encodeURIComponent(claimId)}/decide/latest`);
 }

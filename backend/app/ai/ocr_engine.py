@@ -1,7 +1,11 @@
 """
-Phase 0: Hybrid OCR Engine Module
-Implements multi-detector OCR with fallback chain.
-Primary: PaddleOCR (detection) → OpenAI (handwriting interpretation) → AWS Textract → Tesseract (fallback)
+Hybrid OCR engine with page-wise cheap-first routing.
+
+Default flow:
+- printed/layout pages -> PaddleOCR first
+- handwritten pages -> GPT Vision
+- difficult printed tables -> Textract fallback
+- final fallback -> Tesseract
 """
 
 import logging
@@ -123,22 +127,68 @@ def _ocr_with_paddleocr(image: Image.Image) -> OCRResult:
         img_array = np.array(image)
 
         logger.debug("Running PaddleOCR detection...")
-        results = ocr_model.ocr(img_array, cls=True)
+        try:
+            # Older PaddleOCR builds accept cls=True; newer builds may reject it.
+            results = ocr_model.ocr(img_array, cls=True)
+        except TypeError as exc:
+            msg = str(exc).lower()
+            if "unexpected keyword argument" in msg and "cls" in msg:
+                logger.warning(
+                    "PaddleOCR .ocr(..., cls=True) not supported by installed version; retrying without cls."
+                )
+                results = ocr_model.ocr(img_array)
+            else:
+                raise
 
         extracted_text = ""
         bounding_boxes = []
         confidence_scores = []
 
-        if results and results[0]:
-            for line in results[0]:
-                box, (text, conf) = line
-                extracted_text += text + " "
-                confidence_scores.append(float(conf))
+        # PaddleOCR result shape differs across versions.
+        # Normalize to a list of line entries as much as possible.
+        lines: list[Any] = []
+        if isinstance(results, list):
+            if results and isinstance(results[0], list):
+                lines = results[0]
+            else:
+                lines = results
+        elif isinstance(results, dict):
+            maybe_lines = results.get("rec_texts") or results.get("texts") or []
+            maybe_scores = results.get("rec_scores") or results.get("scores") or []
+            for idx, text in enumerate(maybe_lines):
+                conf = maybe_scores[idx] if idx < len(maybe_scores) else 0.5
+                lines.append((None, (text, conf)))
+
+        for line in lines:
+            try:
+                box, text_tuple = line
+                text, conf = text_tuple
+            except Exception:
+                # Fallback for variants that return plain strings
+                text = str(line or "").strip()
+                conf = 0.5
+                box = None
+
+            text = str(text or "").strip()
+            if not text:
+                continue
+            try:
+                conf_val = float(conf)
+            except Exception:
+                conf_val = 0.5
+
+            extracted_text += text + " "
+            confidence_scores.append(conf_val)
+            if box:
+                try:
+                    norm_box = [[float(p[0]), float(p[1])] for p in box]
+                except Exception:
+                    norm_box = []
                 bounding_boxes.append(
                     {
-                        "box": [[float(p[0]), float(p[1])] for p in box],
+                        "box": norm_box,
                         "text": text,
-                        "confidence": float(conf),
+                        "confidence": conf_val,
                     }
                 )
 
@@ -381,7 +431,7 @@ def run_hybrid_ocr(
     Args:
         image: PIL Image object
         page_type: Classified page type (from page_classifier)
-        strategy: Override strategy ("paddle_openai", "textract", "paddle_only", "skip")
+        strategy: Override strategy ("gpt_vision", "textract", "paddle_only", "skip")
 
     Returns:
         OCRResult with extracted text and metadata
@@ -423,7 +473,7 @@ def run_hybrid_ocr(
             metadata={"reason": f"Page type {page_type} does not require OCR"},
         )
 
-    if strategy == "paddle_openai":
+    if strategy == "gpt_vision":
         try:
             paddle_result = _ocr_with_paddleocr(image)
         except (OCRConfigError, OCRProcessingError) as e:
@@ -435,17 +485,17 @@ def run_hybrid_ocr(
                 result = OCRResult(
                     text=interpreted_text,
                     confidence=paddle_result.confidence,
-                    provider="paddle_openai",
+                    provider="gpt_vision",
                     processing_time=paddle_result.processing_time,
                     page_type=page_type.value if page_type else None,
                     metadata={
-                        "pipeline": "paddle→openai",
-                        "openai_model": getattr(settings, "openai_vision_model", "gpt-5.1"),
+                        "pipeline": "paddle->gpt_vision",
+                        "vision_model": getattr(settings, "openai_vision_model", "gpt-5.1"),
                     },
                 )
             except (OCRConfigError, OCRProcessingError) as e:
-                # OpenAI unavailable/unconfigured: use PaddleOCR-only text as fallback
-                logger.warning(f"OpenAI unavailable; using PaddleOCR text only: {str(e)}")
+                # GPT vision unavailable/unconfigured: use PaddleOCR-only text as fallback
+                logger.warning(f"GPT vision unavailable; using PaddleOCR text only: {str(e)}")
                 result = OCRResult(
                     text=paddle_result.text,
                     confidence=paddle_result.confidence,
@@ -453,7 +503,7 @@ def run_hybrid_ocr(
                     processing_time=paddle_result.processing_time,
                     page_type=page_type.value if page_type else None,
                     bounding_boxes=paddle_result.bounding_boxes,
-                    metadata={"pipeline": "paddle", "openai": "unavailable"},
+                    metadata={"pipeline": "paddle", "gpt_vision": "unavailable"},
                 )
 
             if needs_fallback(result):

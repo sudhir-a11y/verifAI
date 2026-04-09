@@ -83,7 +83,7 @@ def _ensure_structured_data_for_checklist(db: Session, claim_id: UUID, actor_id:
                 db=db,
                 claim_id=claim_id,
                 actor_id=actor_id,
-                use_llm=True,
+                use_llm=False,
                 force_refresh=True,
             )
         except Exception:
@@ -104,7 +104,7 @@ def _ensure_structured_data_for_checklist(db: Session, claim_id: UUID, actor_id:
                 db=db,
                 claim_id=claim_id,
                 actor_id=actor_id,
-                use_llm=True,
+                use_llm=False,
                 force_refresh=True,
             )
         except Exception:

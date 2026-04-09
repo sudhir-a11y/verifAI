@@ -50,7 +50,7 @@ def evaluate_claim_checklist_endpoint(
                 db=db,
                 claim_id=claim_id,
                 actor_id=actor_id or current_user.username,
-                use_llm=True,
+                use_llm=False,
                 force_refresh=True,
             )
         except Exception:
@@ -62,7 +62,7 @@ def evaluate_claim_checklist_endpoint(
                     db=db,
                     claim_id=claim_id,
                     actor_id=actor_id or current_user.username,
-                    use_llm=True,
+                    use_llm=False,
                     force_refresh=True,
                 )
             except Exception:

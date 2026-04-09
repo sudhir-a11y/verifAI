@@ -1,3 +1,137 @@
+## 2026-04-09 — Implementation Update (Completed)
+
+### Completed from previous gap list
+
+1. Extraction default switched to cheap-first routing
+- file: `backend/app/ai/extraction/providers.py`
+- change: `ExtractionProvider.auto` now calls `_extract_hybrid_local(...)`
+
+2. Forced OpenAI provider removed from QC doctor flow defaults
+- file: `backend/app/web/qc/public/workspace.js`
+- changes:
+  - default pipeline provider moved from `openai` to `auto`
+  - analyze/force buttons now run with `extractionProvider: 'auto'`
+  - fallback extraction call changed from `provider: 'openai'` to `provider: 'hybrid_local'`
+  - report-side missing extraction fallback moved from `aws_textract` to `auto`
+
+3. Structured-data generation defaults changed to local-first (`use_llm=false`)
+- backend defaults:
+  - `backend/app/schemas/claim.py`
+  - `backend/app/ai/structuring/service.py`
+  - `backend/app/workflows/prepare_flow.py`
+  - `backend/app/workflows/checklist_pipeline.py`
+  - `backend/app/api/v1/endpoints/checklist.py`
+  - `backend/app/api/v1/endpoints/claims.py` (`GET /structured-data` query default now false)
+  - `backend/app/api/v1/endpoints/documents.py`
+- frontend defaults:
+  - `backend/app/web/qc/public/workspace.js`
+  - `backend/app/web/qc/public/auditor-qc.js` (prepare/decide flows)
+  - `verifAI-UI/src/services/claims.js`
+  - `verifAI-UI/src/components/pages/CaseDetail.jsx`
+
+4. ML usage in final decision path disabled for now
+- file: `backend/app/api/v1/endpoints/claims.py`
+- change: final `/decide` path now always emits `ml_prediction` as disabled payload (`reason: ml_disabled_by_policy`)
+- config alignment:
+  - `backend/app/core/config.py` default `ml_final_decision_enabled=False`
+  - `.env.example` set `ML_FINAL_DECISION_ENABLED=false`
+
+### Carried forward
+
+- Cost accounting still not implemented (token/provider cost tracking table and logs remain pending).
+- Auditor UI still keeps one explicit last-resort LLM structuring call (`use_llm=true`) as fallback only.
+
+---
+
+## 2026-04-09 — Current Status Snapshot
+
+### What was confirmed
+
+- `plan.md` was updated to the correct cost-saving architecture:
+  - route extraction per page, not per claim
+  - use PaddleOCR for printed/layout pages
+  - use Textract only as fallback for difficult printed tables
+  - use GPT Vision only for handwritten pages
+  - keep DeepSeek as the primary reasoner
+  - keep GPT as fallback-only for reasoning/report-quality cases
+- Two backend files were partially updated toward that plan:
+  - `backend/app/ai/page_classifier.py`
+  - `backend/app/ai/ocr_engine.py`
+
+### Code changes already made
+
+- `page_classifier.py`
+  - clarified this module is for OCR routing only
+  - changed routing strategy so:
+    - `PRESCRIPTION` -> `gpt_vision`
+    - `LAB_REPORT` -> `paddle_only`
+    - `INVOICE_BILL` -> `paddle_only`
+- `ocr_engine.py`
+  - renamed the handwriting path from `paddle_openai` to `gpt_vision`
+  - updated metadata/logging to reflect GPT Vision as a handwriting-only path
+  - kept fallback chain intact
+
+### Important gap still not implemented
+
+The cheap-first architecture is not active end-to-end yet.
+
+These still need to be changed:
+
+- `backend/app/ai/extraction/providers.py`
+  - `ExtractionProvider.auto` is still pinned to `aws_textract`
+  - it should default to `hybrid_local` for page-wise routing
+- `backend/app/web/qc/public/workspace.js`
+  - some doctor/QC flows still force `provider: 'openai'`
+  - these should use `auto` or `hybrid_local`
+- structured-data defaults still lean expensive
+  - several flows still call `use_llm=true`
+  - cheap-first path should prefer heuristic/local merge first and use LLM only when needed
+- no provider usage/cost accounting exists yet
+  - no per-call token/cost tracking was found
+
+### ML model assessment recorded
+
+There are two distinct ML tracks in the repo and they should not be mixed together:
+
+1. Naive Bayes text classifier
+- file: `backend/app/ml/models/naive_bayes.py`
+- purpose: classify claim text / PDF-derived text into recommendation-style labels
+- status: implemented and trainable
+- current concern: likely class imbalance and approve bias
+
+2. Final-decision RandomForest
+- files:
+  - `ml/train_model.py`
+  - `backend/app/ml_decision/predictor.py`
+- purpose: predict final decision from structured decision features
+- status: training code exists, but model artifact is only available if enough labeled final-decision rows exist
+- if training data is insufficient, `python ml/train_model.py` returns "Not enough labeled data to train model."
+
+### Interpreting the current ML note from terminal
+
+The pasted ML assessment is directionally correct:
+
+- Naive Bayes is the currently usable text model
+- RandomForest final-decision model depends on labeled `decision_results`-style data
+- neither model currently eliminates the main cost drivers by itself
+
+Practical meaning:
+
+- NB can help with text classification or weak priors
+- RF can help with final decision support once trained
+- the biggest cost savings still come from fixing extraction + structuring defaults, not from ML alone
+
+### Recommended next implementation step
+
+Resume from the partially completed work and make these changes in order:
+
+1. change `ExtractionProvider.auto` -> `hybrid_local`
+2. remove forced OpenAI extraction from QC UI flows
+3. switch default structured-data auto-generation paths to `use_llm=false`
+4. add cost tracking per provider/model call
+
+---
+
 Yes — this **APISetu taxpayers API** is exactly for GST verification.
 You can use it for **pharmacy GST verification**.
 

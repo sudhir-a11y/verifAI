@@ -1,273 +1,90 @@
-Here is your **final improvement context (MD)**
+Yes — split view by role.
+
+# Doctor / Auditor view (simple)
+
+Only comparison panel — no cost.
+
+```
+AI vs ML Analysis
+-------------------------
+AI Decision: APPROVE
+AI Confidence: 0.82
+
+ML Decision: REJECT
+ML Confidence: 0.76
+
+Agreement: ❌
+```
+
+That's it.
+No tokens, no model, no cost.
 
 ---
 
-# AI Claim Report — Final Improvement Context
+# Admin view (full cost summary)
 
-## Goal
-
-Generate a **clean, structured, consistent AI claim report**
-without recomputation and with correct field mapping.
-
----
-
-# 1. Fixed Report Header (Always Static)
-
-These values must **not come from AI or OCR**
-
-### Title
+Show everything:
 
 ```
-HEALTH CLAIM
-Assessment Sheet
+AI vs ML Analysis
+-------------------------
+AI Decision: APPROVE
+AI Confidence: 0.82
+
+ML Decision: REJECT
+ML Confidence: 0.76
+
+Agreement: ❌
 ```
 
-### Generated Line
+Then cost block:
 
 ```
-Generated: {current_datetime} | Doctor: {logged_in_user_name}
-```
-
-Example:
-
-```
-Generated: 3/27/2026, 5:57:59 PM | Doctor: Sapna
-```
-
-Source:
-
-- datetime → server time
-- doctor → current portal logged user
-
----
-
-### Company Name (Always Fixed)
-
-```
-Medi Assist Insurance TPA Pvt. Ltd.
-```
-
-Never extract from document.
-
----
-
-# 2. Claim Type Default
-
-If not found in documents:
-
-```
-Claim Type = Reimbursement
-```
-
-Override only if explicitly found:
-
-- cashless
-- corporate
-- network
-
----
-
-# 3. Hospital Name Extraction (Generic Rule)
-
-If hospital missing:
-
-Check in order:
-
-1. Page header (top 20%)
-2. Largest uppercase text
-3. Contains:
-   - HOSPITAL
-   - CLINIC
-   - MEDICAL
-   - CENTER
-
-Ignore:
-
-- patient name
-- doctor name
-
-Example detected:
-
-```
-SECOND LIFE HOSPITAL
+AI Usage Summary
+-------------------------
+Model: GPT-4.1
+Tokens: 1500
+Cost: $0.0042
+Step: Report Generation
 ```
 
 ---
 
-# 4. Treating Doctor Extraction
-
-Search patterns:
-
-- DR.
-- Dr.
-- Consultant
-- Treating doctor
-- Physician
-
-Extract nearest name.
-
-Example:
+# Admin (total claim cost)
 
 ```
-CONSULTANT: DR. DESHPANDE
-```
-
-Result:
-
-```
-Dr. Deshpande
+Total AI Cost (Claim)
+-------------------------
+Extraction: $0.0021
+Structuring: $0.0014
+Reasoning: $0.0009
+Report: $0.0042
+-------------------------
+Total: $0.0086
 ```
 
 ---
 
-# 5. Patient Name Extraction
+# Final UI layout
 
-Only accept if near:
-
-- Patient Name
-- Insured
-- Name:
-
-Never from:
-
-- header
-- letterhead
-- footer
-
----
-
-# 6. Diagnosis Extraction Priority
-
-Order:
-
-1. "Diagnosis:" label
-2. Discharge summary diagnosis
-3. Lab-confirmed diagnosis
-4. Ignore complaints
-
-Correct:
+Doctor/Auditor:
 
 ```
-MP Vivax positive with LRTI
+Report
+AI summary
+AI vs ML panel
+Checklist
 ```
 
-Wrong:
+Admin:
 
 ```
-fever cough weakness
+Report
+AI summary
+AI vs ML panel
+AI usage breakdown
+Total claim cost
+Checklist
 ```
 
----
-
-# 7. Optimized AI Pipeline (Final)
-
-## Step 1 — Extraction
-
-Skip if exists
-
-## Step 2 — Structured Data
-
-Skip if exists
-
-## Step 3 — Medicine Extraction
-
-Skip if exists
-
-## Step 4 — Checklist
-
-Skip if fresh
-
-## Step 5 — AI Reasoning
-
-Always run
-
-## Step 6 — ML Scoring
-
-Always run
-
-Outputs:
-
-- decision
-- confidence
-- risk score
-
-## Step 7 — Final Report Generation
-
-Generate HTML with:
-
-- header (fixed)
-- claim info
-- diagnosis
-- investigations summary
-- treatment summary
-- checklist result
-- AI decision
-- confidence
-- risk score
-- final recommendation
-
----
-
-# 8. Skip Logic (Performance)
-
-Skip when already available:
-
-| Step         | Skip Condition                 |
-| ------------ | ------------------------------ |
-| Extraction   | extraction exists              |
-| Structured   | structured exists              |
-| Medicine     | medicine exists                |
-| Checklist    | checklist fresh                |
-| AI reasoning | never skip                     |
-| ML scoring   | never skip                     |
-| Report       | regenerate if decision changed |
-
----
-
-# 9. Final Report Must Contain
-
-Header:
-
-- Title
-- Generated
-- Company
-
-Claim Info:
-
-- Claim no
-- Claim type
-- Hospital
-- Doctor
-
-Medical:
-
-- Diagnosis
-- Investigations summary
-- Treatment summary
-
-AI:
-
-- Decision
-- Confidence
-- Risk score
-
-Final:
-
-- Conclusion
-- Recommendation
-
----
-
-# Final Result
-
-Run AI should:
-
-- not re-extract
-- not recompute
-- fill missing fields
-- generate report
-- attach AI decision
-- attach confidence
-- attach risk score
-
-Fast + consistent + correct.
+This is correct separation.

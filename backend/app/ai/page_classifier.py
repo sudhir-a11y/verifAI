@@ -1,7 +1,8 @@
 """
-Phase 0: Page Classifier Module
-Classifies document pages into types (prescription, lab_report, invoice, identity, other, blank).
-Uses rule-based detection with image properties analysis.
+Page classifier for page-wise extraction routing.
+
+This module intentionally classifies pages for OCR/provider routing only.
+It does not perform reasoning or claim decisioning.
 """
 
 import logging
@@ -247,12 +248,14 @@ def get_ocr_strategy(page_type: PageType) -> str:
         page_type: PageType classification
 
     Returns:
-        Strategy name: "paddle_openai" | "textract" | "paddle_only" | "skip"
+        Strategy name: "gpt_vision" | "textract" | "paddle_only" | "skip"
     """
     strategies = {
-        PageType.PRESCRIPTION: "paddle_openai",  # Handwriting + OpenAI
-        PageType.LAB_REPORT: "textract",  # Structured data
-        PageType.INVOICE_BILL: "textract",  # Tables
+        # Handwritten pages are the only default GPT-vision path.
+        PageType.PRESCRIPTION: "gpt_vision",
+        # Printed structured pages should stay on the cheaper OCR/table path.
+        PageType.LAB_REPORT: "paddle_only",
+        PageType.INVOICE_BILL: "paddle_only",
         PageType.IDENTITY: "skip",  # Security: don't OCR
         PageType.OTHER_MEDICAL: "paddle_only",  # General medical
         PageType.UNKNOWN: "paddle_only",  # Fallback

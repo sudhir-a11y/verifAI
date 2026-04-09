@@ -261,7 +261,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ML_AUTO_RETRAIN_MIN_INTERVAL_MINUTES"),
     )
     ml_final_decision_enabled: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("ML_FINAL_DECISION_ENABLED"),
     )
     ml_final_decision_min_confidence: float = Field(

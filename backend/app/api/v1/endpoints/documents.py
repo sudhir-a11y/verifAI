@@ -44,7 +44,7 @@ def _run_claim_prepare_background(claim_id: UUID, actor_id: str) -> None:
             claim_id=claim_id,
             actor_id=actor_id,
             force_refresh=False,
-            use_llm=True,
+            use_llm=False,
         )
     except Exception as exc:
         try_record_workflow_event(
