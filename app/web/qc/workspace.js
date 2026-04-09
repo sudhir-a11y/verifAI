@@ -859,16 +859,6 @@
       updatePaginationUi();
     }
   }
-
-  function buildLegacyAssignedCasesUrl(externalClaimId, searchClaim, allotmentDate) {
-    const params = new URLSearchParams();
-    params.set('page', '1');
-    params.set('search_claim', String(searchClaim || ''));
-    params.set('allotment_date', String(allotmentDate || ''));
-    params.set('claim_id', String(externalClaimId || ''));
-    return 'http://localhost/QC-BKP/doctor/assigned_cases.php?' + params.toString();
-  }
-
   function isKycIdentityDocName(value) {
     const name = String(value || '').toLowerCase();
     if (!name) return false;
@@ -1115,7 +1105,7 @@
       const normalized = String(raw || 'Pending').replace(/<br\s*\/?\s*>/gi, '\n');
       return escapeHtml(normalized).replace(/\n/g, '<br>');
     }
-    async function openCaseLegacy(claimUuid, externalClaimId, searchClaim, allotmentDate, triggerButton) {
+    async function openCaseDetail(claimUuid, externalClaimId, searchClaim, allotmentDate, triggerButton) {
       const claimId = String(externalClaimId || '').trim();
       const claimKey = String(claimUuid || '').trim();
       if (!claimKey) {
@@ -1254,7 +1244,7 @@
 
       tbody.querySelectorAll('button[data-open-case]').forEach((btn) => {
         btn.addEventListener('click', async function () {
-          await openCaseLegacy(
+          await openCaseDetail(
             String(this.getAttribute('data-open-claim-id') || ''),
             String(this.getAttribute('data-open-case') || ''),
             searchClaim,
@@ -1341,7 +1331,6 @@
       + '<div><h2 class="claim-status-title">Case Detail</h2><p class="muted">Detailed view with extraction, AI analysis and document list.</p></div>'
       + '<div class="case-detail-header__actions">'
       + '<a class="btn-soft" href="/qc/' + escapeHtml(activeRouteRole) + '/' + escapeHtml(backPage) + '">Back</a>'
-      + '<a class="btn-soft" id="case-open-legacy" href="#" target="_blank" rel="noopener">Open Legacy Page</a>'
       + '</div></div>'
       + '<p id="case-detail-msg"></p>'
       + '<div class="table-wrap claim-status-table-wrap"><table><tbody id="case-detail-summary"></tbody></table></div>'
@@ -1375,7 +1364,6 @@
     const docsEl = document.getElementById('case-detail-docs');
     const generatedReportEl = document.getElementById('case-generated-report');
     const logEl = document.getElementById('case-detail-log');
-    const openLegacyEl = document.getElementById('case-open-legacy');
     const fullReportViewEl = document.getElementById('case-report-full-view');
     const fullReportBodyEl = document.getElementById('case-report-full-body');
 
@@ -1964,7 +1952,7 @@
       const out = { temps: [], pulses: [], bps: [] };
       let m;
 
-      const tempRegex = /\b(?:temp(?:erature)?|t)\b\s*[:=\-]?\s*([0-9]{2,3}(?:\.[0-9]{1,2})?)\s*(?:°?\s*[CF])?/ig;
+      const tempRegex = /\b(?:temp(?:erature)?|t)\b\s*[:=\-]?\s*([0-9]{2,3}(?:\.[0-9]{1,2})?)\s*(?:ï¿½?\s*[CF])?/ig;
       while ((m = tempRegex.exec(text)) !== null) {
         const t = normalizeMeasurementValue(m[1], 30, 110);
         if (Number.isFinite(t)) out.temps.push(t);
@@ -2123,7 +2111,7 @@
 
       allTexts.forEach(function (block) {
         String(block || '').split(/\r?\n|;/).forEach(function (line) {
-          const cleaned = sanitizeReportText(line).replace(/^[\-•\d.()]+\s*/, '').trim();
+          const cleaned = sanitizeReportText(line).replace(/^[\-ï¿½\d.()]+\s*/, '').trim();
           if (!cleaned || cleaned === '-') return;
           if (!/[A-Za-z]/.test(cleaned)) return;
           if (/^(?:list\s+of\s+medicines|details?\s+of\s+medication|ipd\s+medicine\s+bill)/i.test(cleaned)) return;
@@ -2557,7 +2545,7 @@
         const seen = new Set();
         clinicalFindingCandidates.forEach(function (block) {
           String(block || '').split(/\r?\n/).forEach(function (line) {
-            const t = sanitizeReportText(line).replace(/^[\-•]+\s*/, '').trim();
+            const t = sanitizeReportText(line).replace(/^[\-ï¿½]+\s*/, '').trim();
             if (!t) return;
             if (/^(?:patient\s*name|hospital\b|add\s*:|address\b|doa\b|dod\b|date\s*:|time\s*:|total\b|claimed\b|name\s+of\s+the\s+manager\b|signatures?\b)/i.test(t)) return;
             if (/\b(?:details?\s+of\s+medication|follow\s*up\s+recommendation|ipd\s+medicine\s+bill|medicine\s+name)\b/i.test(t)) return;
@@ -3231,9 +3219,6 @@
       const statusItem = statusItems.find(function (item) {
         return String(item && item.id ? item.id : '') === claimUuid;
       }) || {};
-
-      openLegacyEl.href = buildLegacyAssignedCasesUrl(claim.external_claim_id || routeClaimId, backSearchClaim, backAllotmentDate);
-
       const detailRows = [];
       detailRows.push(summaryRow('Claim ID', asTextCell(claim.external_claim_id || routeClaimId || '-')));
       detailRows.push(summaryRow('Claim Date', asTextCell(formatDateOnly(claim.created_at))));

@@ -1088,16 +1088,6 @@
       updatePaginationUi();
     }
   }
-
-  function buildLegacyAssignedCasesUrl(externalClaimId, searchClaim, allotmentDate) {
-    const params = new URLSearchParams();
-    params.set('page', '1');
-    params.set('search_claim', String(searchClaim || ''));
-    params.set('allotment_date', String(allotmentDate || ''));
-    params.set('claim_id', String(externalClaimId || ''));
-    return 'http://localhost/QC-BKP/doctor/assigned_cases.php?' + params.toString();
-  }
-
   function isKycIdentityDocName(value) {
     const name = String(value || '').toLowerCase();
     if (!name) return false;
@@ -1353,7 +1343,7 @@
       const normalized = String(raw || 'Pending').replace(/<br\s*\/?\s*>/gi, '\n');
       return escapeHtml(normalized).replace(/\n/g, '<br>');
     }
-    async function openCaseLegacy(claimUuid, externalClaimId, searchClaim, allotmentDate, triggerButton) {
+    async function openCaseDetail(claimUuid, externalClaimId, searchClaim, allotmentDate, triggerButton) {
       const claimId = String(externalClaimId || '').trim();
       const claimKey = String(claimUuid || '').trim();
       if (!claimKey) {
@@ -1496,7 +1486,7 @@
 
       tbody.querySelectorAll('button[data-open-case]').forEach((btn) => {
         btn.addEventListener('click', async function () {
-          await openCaseLegacy(
+          await openCaseDetail(
             String(this.getAttribute('data-open-claim-id') || ''),
             String(this.getAttribute('data-open-case') || ''),
             searchClaim,
@@ -1583,7 +1573,6 @@
       + '<div><h2 class="claim-status-title">Case Detail</h2><p class="muted">Detailed view with extraction, AI analysis and document list.</p></div>'
       + '<div class="case-detail-header__actions">'
       + '<a class="btn-soft" href="/qc/' + escapeHtml(activeRouteRole) + '/' + escapeHtml(backPage) + '">Back</a>'
-      + '<a class="btn-soft" id="case-open-legacy" href="#" target="_blank" rel="noopener">Open Legacy Page</a>'
       + '</div></div>'
       + '<p id="case-detail-msg"></p>'
       + '<div class="table-wrap claim-status-table-wrap"><table><tbody id="case-detail-summary"></tbody></table></div>'
@@ -1619,7 +1608,6 @@
     const docsEl = document.getElementById('case-detail-docs');
     const generatedReportEl = document.getElementById('case-generated-report');
     const logEl = document.getElementById('case-detail-log');
-    const openLegacyEl = document.getElementById('case-open-legacy');
     const fullReportViewEl = document.getElementById('case-report-full-view');
     const fullReportBodyEl = document.getElementById('case-report-full-body');
 
@@ -4067,9 +4055,6 @@
       const statusItem = statusItems.find(function (item) {
         return String(item && item.id ? item.id : '') === claimUuid;
       }) || {};
-
-      openLegacyEl.href = buildLegacyAssignedCasesUrl(claim.external_claim_id || routeClaimId, backSearchClaim, backAllotmentDate);
-
       const detailRows = [];
       detailRows.push(summaryRow('Claim ID', asTextCell(claim.external_claim_id || routeClaimId || '-')));
       detailRows.push(summaryRow('Claim Date', asTextCell(formatDateOnly(claim.created_at))));
