@@ -7680,7 +7680,11 @@
 					return true;
 				}
 				const w = window.open(url, "_blank");
-				if (!w) return false;
+				if (!w) {
+					// Popup blocked: fallback to same-tab navigation.
+					window.location.href = url;
+					return true;
+				}
 				try {
 					w.name = windowNamePayload;
 				} catch (_nameErr2) {}

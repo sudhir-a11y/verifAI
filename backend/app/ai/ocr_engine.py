@@ -160,6 +160,42 @@ def _ocr_with_paddleocr(image: Image.Image) -> OCRResult:
                 lines.append((None, (text, conf)))
 
         for line in lines:
+            # Newer PaddleOCR returns mapping-like OCRResult objects with
+            # rec_texts/rec_scores/dt_polys fields.
+            if hasattr(line, "get"):
+                rec_texts = line.get("rec_texts") or line.get("texts") or []
+                rec_scores = line.get("rec_scores") or line.get("scores") or []
+                rec_polys = line.get("dt_polys") or line.get("rec_polys") or line.get("dt_boxes") or []
+                if isinstance(rec_texts, list) and rec_texts:
+                    for idx, text_item in enumerate(rec_texts):
+                        text = str(text_item or "").strip()
+                        if not text:
+                            continue
+                        score_item = rec_scores[idx] if idx < len(rec_scores) else 0.5
+                        try:
+                            conf_val = float(score_item)
+                        except Exception:
+                            conf_val = 0.5
+
+                        extracted_text += text + " "
+                        confidence_scores.append(conf_val)
+
+                        poly = rec_polys[idx] if idx < len(rec_polys) else None
+                        norm_box = []
+                        if poly is not None:
+                            try:
+                                norm_box = [[float(p[0]), float(p[1])] for p in poly]
+                            except Exception:
+                                norm_box = []
+                        bounding_boxes.append(
+                            {
+                                "box": norm_box,
+                                "text": text,
+                                "confidence": conf_val,
+                            }
+                        )
+                    continue
+
             try:
                 box, text_tuple = line
                 text, conf = text_tuple
@@ -456,6 +492,9 @@ def run_hybrid_ocr(
     )
 
     threshold = float(getattr(settings, "ocr_confidence_threshold", 0.6))
+    # If the user hasn't installed Tesseract, we should still succeed when
+    # PaddleOCR extracted usable text, even if it's "low confidence".
+    last_usable_result: Optional[OCRResult] = None
 
     def needs_fallback(result: OCRResult) -> bool:
         if not result.text.strip():
@@ -534,6 +573,8 @@ def run_hybrid_ocr(
             paddle_result = _ocr_with_paddleocr(image)
             paddle_result.page_type = page_type.value if page_type else None
             if needs_fallback(paddle_result):
+                if paddle_result.text.strip():
+                    last_usable_result = paddle_result
                 logger.warning(
                     f"PaddleOCR returned low-confidence/empty result; falling back to Tesseract (confidence={paddle_result.confidence:.2f})"
                 )
@@ -550,6 +591,12 @@ def run_hybrid_ocr(
             tess_result.page_type = page_type.value if page_type else None
             return tess_result
         except (OCRConfigError, OCRProcessingError) as e:
+            if last_usable_result is not None:
+                logger.warning(
+                    f"Tesseract unavailable/failed ({str(e)}); returning last usable OCR result from {last_usable_result.provider}"
+                )
+                return last_usable_result
+
             logger.error(f"All OCR methods failed: {str(e)}")
             if isinstance(e, OCRConfigError):
                 raise OCRConfigError(f"All OCR methods unavailable: {str(e)}") from e

@@ -12,7 +12,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.ai.openai_responses import OpenAIResponsesError, extract_responses_text, responses_create
+from app.ai.openai_responses import (
+    OpenAIResponsesError,
+    extract_responses_text,
+    responses_create,
+)
 
 
 FIELD_KEYS: list[str] = [
@@ -38,7 +42,17 @@ FIELD_KEYS: list[str] = [
 
 STRICT_RULE_BASED_MODE = True
 
-_EMPTY_TEXT_MARKERS = {"", "-", "na", "n/a", "none", "nil", "null", "unknown", "notavailable"}
+_EMPTY_TEXT_MARKERS = {
+    "",
+    "-",
+    "na",
+    "n/a",
+    "none",
+    "nil",
+    "null",
+    "unknown",
+    "notavailable",
+}
 _HOSPITAL_REQUIRED_TOKENS = (
     "hospital",
     "clinic",
@@ -172,10 +186,20 @@ def _clean_hospital_name(value: Any) -> str:
     if m:
         return _normalize_space_text(m.group(1))
     low = hospital.lower()
-    token_hits = len(re.findall(r"\b(?:road|rd|street|st|lane|ln|nagar|colony|city|district|state|pin|pincode|zip|plot|floor|building|plaza|near|opp|opposite|shop|apartment|apt|flat|unit|society|chsl|complex|tower|wing|sector|block|east|west|north|south|taluka|tehsil)\b", low))
-    if re.search(r"\b(?:hospital\s*address|full\s*postal\s*address|address\s*of\s*hospital|hospital\s*addr(?:ess)?)\b", low):
+    token_hits = len(
+        re.findall(
+            r"\b(?:road|rd|street|st|lane|ln|nagar|colony|city|district|state|pin|pincode|zip|plot|floor|building|plaza|near|opp|opposite|shop|apartment|apt|flat|unit|society|chsl|complex|tower|wing|sector|block|east|west|north|south|taluka|tehsil)\b",
+            low,
+        )
+    )
+    if re.search(
+        r"\b(?:hospital\s*address|full\s*postal\s*address|address\s*of\s*hospital|hospital\s*addr(?:ess)?)\b",
+        low,
+    ):
         return ""
-    if token_hits >= 2 and (re.search(r"\d{3,}", low) or re.search(r"\b(?:pin|pincode|zip)\b", low)):
+    if token_hits >= 2 and (
+        re.search(r"\d{3,}", low) or re.search(r"\b(?:pin|pincode|zip)\b", low)
+    ):
         return ""
     if token_hits >= 1 and low.count(",") >= 2 and re.search(r"\b\d{6}\b", low):
         return ""
@@ -196,7 +220,19 @@ def _clean_doctor_name(value: Any) -> str:
         return ""
     if re.search(r"\d", doctor):
         return ""
-    if any(token in low for token in ["hospital", "policy", "claim", "patient", "insured", "beneficiary", "admission", "discharge"]):
+    if any(
+        token in low
+        for token in [
+            "hospital",
+            "policy",
+            "claim",
+            "patient",
+            "insured",
+            "beneficiary",
+            "admission",
+            "discharge",
+        ]
+    ):
         return ""
     parts = [p for p in re.split(r"\s+", doctor) if p]
     if len(parts) < 2:
@@ -223,7 +259,17 @@ def _clean_registration_number(value: Any) -> tuple[str, str]:
         return "", ""
     if re.fullmatch(r"0+", reg_norm):
         return "", ""
-    if any(token in reg_norm.lower() for token in ["qualification", "hospital", "patient", "claim", "policy", "address"]):
+    if any(
+        token in reg_norm.lower()
+        for token in [
+            "qualification",
+            "hospital",
+            "patient",
+            "claim",
+            "policy",
+            "address",
+        ]
+    ):
         return "", ""
     return reg, reg_norm
 
@@ -237,7 +283,13 @@ def _extract_hospital_from_raw_payload(raw_payload: dict[str, Any]) -> str:
 
     legacy = context.get("legacy")
     if isinstance(legacy, dict):
-        for key in ["hospital_name", "hospital", "provider_hospital", "treating_hospital", "facility_name"]:
+        for key in [
+            "hospital_name",
+            "hospital",
+            "provider_hospital",
+            "treating_hospital",
+            "facility_name",
+        ]:
             candidate = _normalize_space_text(legacy.get(key))
             if candidate:
                 return candidate
@@ -246,7 +298,13 @@ def _extract_hospital_from_raw_payload(raw_payload: dict[str, Any]) -> str:
     if isinstance(claim, dict):
         nested_legacy = _safe_json(claim.get("legacy_payload"), {})
         if isinstance(nested_legacy, dict):
-            for key in ["hospital_name", "hospital", "provider_hospital", "treating_hospital", "facility_name"]:
+            for key in [
+                "hospital_name",
+                "hospital",
+                "provider_hospital",
+                "treating_hospital",
+                "facility_name",
+            ]:
                 candidate = _normalize_space_text(nested_legacy.get(key))
                 if candidate:
                     return candidate
@@ -272,7 +330,9 @@ def _build_clean_provider_registry_payload(
             break
 
     doctor_name = _clean_doctor_name(fields.get("treating_doctor"))
-    registration_number, reg_norm = _clean_registration_number(fields.get("treating_doctor_registration_number"))
+    registration_number, reg_norm = _clean_registration_number(
+        fields.get("treating_doctor_registration_number")
+    )
 
     if not hospital_name or not doctor_name or not registration_number or not reg_norm:
         return None
@@ -382,6 +442,7 @@ def _extract_openai_text(body: Any) -> str:
 
 def _ensure_table(db: Session) -> None:
     from app.repositories import claim_structured_data_repo, provider_registry_repo
+
     claim_structured_data_repo.ensure_table(db)
     provider_registry_repo.ensure_table(db)
 
@@ -393,6 +454,7 @@ def _parse_amount(value: Any) -> str:
         return ""
     n = m.group(1)
     return n.rstrip("0").rstrip(".") if "." in n else n
+
 
 def _strip_html(value: Any) -> str:
     return re.sub(r"<[^>]*>", " ", _txt(value)).replace("&nbsp;", " ")
@@ -411,16 +473,21 @@ def _merge_multiline(a: Any, b: Any, limit: int = 120) -> str:
     return "\n".join(_dedupe(lines)[: max(1, limit)]) if lines else "-"
 
 
-
 def _looks_like_billing_or_rate_text(value: Any) -> bool:
     t = _txt(value).lower()
     if not t:
         return False
     if re.search(r"\b(?:rupees?|inr|rs\.?)\b", t):
         return True
-    if re.search(r"\b(?:bill(?:ing)?|invoice|receipt|cash|discount|paid|payment|charges?|rate|price)\b", t):
+    if re.search(
+        r"\b(?:bill(?:ing)?|invoice|receipt|cash|discount|paid|payment|charges?|rate|price)\b",
+        t,
+    ):
         return True
-    if re.search(r"\b(?:total\s*(?:bill|amount|sum|payment)|final\s*payment|amount\s*claimed|claim(?:ed)?\s*amount)\b", t):
+    if re.search(
+        r"\b(?:total\s*(?:bill|amount|sum|payment)|final\s*payment|amount\s*claimed|claim(?:ed)?\s*amount)\b",
+        t,
+    ):
         return True
     if re.search(r"\bvalue\s*:\s*\d+(?:\.\d+)?\s*(?:rupees?|inr|rs\.?)\b", t):
         return True
@@ -432,26 +499,67 @@ def _looks_like_hospital_address_text(value: Any) -> bool:
     if not t:
         return False
     low = t.lower()
-    if re.search(r"\b(?:hospital\s*address|full\s*postal\s*address|address\s*of\s*hospital|hospital\s*addr(?:ess)?)\b", low):
+    if re.search(
+        r"\b(?:hospital\s*address|full\s*postal\s*address|address\s*of\s*hospital|hospital\s*addr(?:ess)?)\b",
+        low,
+    ):
         return True
     if re.search(r"^(?:add(?:ress)?\s*[:\-])", low):
         return True
 
     address_tokens = (
-        "road", "rd", "street", "st", "lane", "ln", "nagar", "colony", "city",
-        "district", "state", "pin", "pincode", "zip", "plot", "floor", "building",
-        "plaza", "near", "opp", "opposite", "shop", "apartment", "apt", "flat",
-        "unit", "society", "chsl", "complex", "tower", "wing", "sector", "block",
-        "east", "west", "north", "south", "taluka", "tehsil",
+        "road",
+        "rd",
+        "street",
+        "st",
+        "lane",
+        "ln",
+        "nagar",
+        "colony",
+        "city",
+        "district",
+        "state",
+        "pin",
+        "pincode",
+        "zip",
+        "plot",
+        "floor",
+        "building",
+        "plaza",
+        "near",
+        "opp",
+        "opposite",
+        "shop",
+        "apartment",
+        "apt",
+        "flat",
+        "unit",
+        "society",
+        "chsl",
+        "complex",
+        "tower",
+        "wing",
+        "sector",
+        "block",
+        "east",
+        "west",
+        "north",
+        "south",
+        "taluka",
+        "tehsil",
     )
     token_hits = 0
     for tok in address_tokens:
         if re.search(rf"\b{re.escape(tok)}\b", low):
             token_hits += 1
 
-    if re.search(r"\b(?:shop|apartment|apt|flat|unit)\s*no\.?\s*\d+\b", low) and re.search(r"\b\d{6}\b", low):
+    if re.search(
+        r"\b(?:shop|apartment|apt|flat|unit)\s*no\.?\s*\d+\b", low
+    ) and re.search(r"\b\d{6}\b", low):
         return True
-    if token_hits >= 2 and (re.search(r"\d{3,}", low) or re.search(r"\b(?:pin|pincode|zip)\b", low)):
+    if token_hits >= 2 and (
+        re.search(r"\d{3,}", low) or re.search(r"\b(?:pin|pincode|zip)\b", low)
+    ):
         return True
     if token_hits >= 1 and low.count(",") >= 2 and re.search(r"\b\d{6}\b", low):
         return True
@@ -471,20 +579,33 @@ def _clean_findings_text(value: Any) -> str:
             continue
         if re.search(r"^(?:date\s*[:\-]|time\s*[:\-])", low):
             continue
-        if re.search(r"^(?:details?\s+of\s+medication|follow\s*up\s+recommendation|ipd\s+medicine\s+bill|medicine\s+name)\b", low):
+        if re.search(
+            r"^(?:details?\s+of\s+medication|follow\s*up\s+recommendation|ipd\s+medicine\s+bill|medicine\s+name)\b",
+            low,
+        ):
             continue
-        if re.search(r"^(?:name\s*of\s*the\s*(?:manager|establishment)|signatures?)\b", low):
+        if re.search(
+            r"^(?:name\s*of\s*the\s*(?:manager|establishment)|signatures?)\b", low
+        ):
             continue
         if _looks_like_hospital_address_text(line):
             continue
-        if re.search(r"\b(?:follow\s*up(?:\s*to)?|review\s+after|in\s+case\s+of\s+emergency|call\s+us|contact\s*(?:us|no)?|helpline|mobile(?:\s*number)?|phone(?:\s*number)?)\b", low):
+        if re.search(
+            r"\b(?:follow\s*up(?:\s*to)?|review\s+after|in\s+case\s+of\s+emergency|call\s+us|contact\s*(?:us|no)?|helpline|mobile(?:\s*number)?|phone(?:\s*number)?)\b",
+            low,
+        ):
             continue
         if re.search(r"(?:\+?91[\s\-]*)?[6-9]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}\b", low):
             continue
-        if re.search(r"^(patient\s*name|hospital\b|name\s*of\s*the\s*establishment|full\s*postal\s*address|add\s*:|admit(?:ting|ing)\s*dr|consultant\s*name|received\s+with\s+thanks)\b", low):
+        if re.search(
+            r"^(patient\s*name|hospital\b|name\s*of\s*the\s*establishment|full\s*postal\s*address|add\s*:|admit(?:ting|ing)\s*dr|consultant\s*name|received\s+with\s+thanks)\b",
+            low,
+        ):
             continue
         rows.append(line)
     return "\n".join(_dedupe_by_fingerprint(rows)) if rows else "-"
+
+
 def _extract_doctor_from_text_blob(text_blob: str) -> str:
     src = _strip_html(text_blob)
     patterns = [
@@ -497,7 +618,12 @@ def _extract_doctor_from_text_blob(text_blob: str) -> str:
             continue
         doctor = _txt(m.group(1))
         doctor = re.sub(r"\s{2,}", " ", doctor)
-        doctor = re.sub(r"\b(reg(?:istration)?\s*no\.?|mci\s*reg(?:istration)?\s*no\.?|nmc\s*reg(?:istration)?\s*no\.?)\b.*$", "", doctor, flags=re.I).strip(" ,.;:-")
+        doctor = re.sub(
+            r"\b(reg(?:istration)?\s*no\.?|mci\s*reg(?:istration)?\s*no\.?|nmc\s*reg(?:istration)?\s*no\.?)\b.*$",
+            "",
+            doctor,
+            flags=re.I,
+        ).strip(" ,.;:-")
         if doctor and len(doctor) >= 4:
             return doctor
     return ""
@@ -528,7 +654,10 @@ def _extract_medicines_from_text_blob(text_blob: str, limit: int = 80) -> list[s
 
     for line in lines:
         low = line.lower()
-        if re.search(r"\b(treatment\s+medicines?|medications?|prescriptions?|rx|drug\s+chart)\b", low):
+        if re.search(
+            r"\b(treatment\s+medicines?|medications?|prescriptions?|rx|drug\s+chart)\b",
+            low,
+        ):
             in_med_section = True
             continue
         if in_med_section and re.match(r"^[A-Z][A-Z\s\/\-]{6,}$", line):
@@ -561,7 +690,9 @@ def _is_garbled_text(value: Any) -> bool:
     non_ascii = sum(1 for ch in sample if ord(ch) > 126)
     alpha_count = sum(1 for ch in sample if ch.isalpha())
     ascii_alpha = sum(1 for ch in sample if ch.isascii() and ch.isalpha())
-    vowel_count = sum(1 for ch in sample if ch.isascii() and ch.isalpha() and ch.lower() in "aeiou")
+    vowel_count = sum(
+        1 for ch in sample if ch.isascii() and ch.isalpha() and ch.lower() in "aeiou"
+    )
     weird_count = sum(
         1
         for ch in sample
@@ -597,7 +728,9 @@ def _normalize_medicine_line(value: Any) -> str:
     if _is_garbled_text(line):
         return ""
 
-    punctuation_count = sum(1 for ch in line if (not ch.isalnum()) and (not ch.isspace()))
+    punctuation_count = sum(
+        1 for ch in line if (not ch.isalnum()) and (not ch.isspace())
+    )
     if punctuation_count / max(1, len(line)) > 0.12:
         return ""
 
@@ -610,6 +743,8 @@ def _normalize_medicine_line(value: Any) -> str:
         return ""
 
     return line
+
+
 def _filter_medicine_lines(values: list[str], limit: int = 80) -> list[str]:
     rows: list[str] = []
     for raw in values:
@@ -619,10 +754,19 @@ def _filter_medicine_lines(values: list[str], limit: int = 80) -> list[str]:
                 rows.append(normalized)
     return _dedupe(rows)[: max(1, limit)]
 
-def _collect_investigation_rows(entity_docs: list[dict[str, Any]], evidence_lines: list[str] | None = None) -> list[str]:
+
+def _collect_investigation_rows(
+    entity_docs: list[dict[str, Any]], evidence_lines: list[str] | None = None
+) -> list[str]:
     alias_keys = [
-        "all_investigation_reports_with_values", "all_investigation_report_lines", "investigation_reports",
-        "investigations", "investigation_finding_in_details", "lab_results", "test_results", "deranged_investigation",
+        "all_investigation_reports_with_values",
+        "all_investigation_report_lines",
+        "investigation_reports",
+        "investigations",
+        "investigation_finding_in_details",
+        "lab_results",
+        "test_results",
+        "deranged_investigation",
     ]
     alias_norm = [_norm_key(a) for a in alias_keys]
     rows: list[str] = []
@@ -648,17 +792,37 @@ def _collect_investigation_rows(entity_docs: list[dict[str, Any]], evidence_line
             continue
         for key, value in entities.items():
             k = _norm_key(key)
-            if not k or not any(k == a or k.find(a) >= 0 or a.find(k) >= 0 for a in alias_norm):
+            if not k or not any(
+                k == a or k.find(a) >= 0 or a.find(k) >= 0 for a in alias_norm
+            ):
                 continue
 
             if isinstance(value, list):
                 for item in value:
                     if isinstance(item, dict):
-                        lab_name = _txt(item.get("lab_name") or item.get("laboratory") or item.get("lab") or item.get("pathology_name"))
-                        test_name = _txt(item.get("test_name") or item.get("test") or item.get("name") or item.get("parameter"))
-                        test_value = _txt(item.get("value") or item.get("result") or item.get("finding"))
+                        lab_name = _txt(
+                            item.get("lab_name")
+                            or item.get("laboratory")
+                            or item.get("lab")
+                            or item.get("pathology_name")
+                        )
+                        test_name = _txt(
+                            item.get("test_name")
+                            or item.get("test")
+                            or item.get("name")
+                            or item.get("parameter")
+                        )
+                        test_value = _txt(
+                            item.get("value")
+                            or item.get("result")
+                            or item.get("finding")
+                        )
                         unit = _txt(item.get("unit"))
-                        ref = _txt(item.get("reference_range") or item.get("range") or item.get("normal_range"))
+                        ref = _txt(
+                            item.get("reference_range")
+                            or item.get("range")
+                            or item.get("normal_range")
+                        )
                         flag = _txt(item.get("flag") or item.get("status"))
                         dt = _txt(item.get("date") or item.get("observed_at"))
                         provided_line = _txt(item.get("line"))
@@ -673,7 +837,9 @@ def _collect_investigation_rows(entity_docs: list[dict[str, Any]], evidence_line
                         if test_name:
                             parts.append(f"Test: {test_name}")
                         if test_value:
-                            value_with_unit = f"{test_value} {unit}" if unit else test_value
+                            value_with_unit = (
+                                f"{test_value} {unit}" if unit else test_value
+                            )
                             parts.append(f"Value: {value_with_unit}")
                         if ref and not _looks_like_billing_or_rate_text(ref):
                             parts.append(f"Range: {ref}")
@@ -690,11 +856,15 @@ def _collect_investigation_rows(entity_docs: list[dict[str, Any]], evidence_line
                 for ln in re.split(r"\r\n|\r|\n", _txt(value)):
                     add_row(ln)
 
-    for line in (evidence_lines or []):
+    for line in evidence_lines or []:
         t = _txt(line)
         if not t:
             continue
-        if re.search(r"\b(hb|hgb|wbc|rbc|platelet|esr|crp|creatinine|urea|bilirubin|sgot|sgpt|sodium|potassium|lab|reference\s*range|range)\b", t, re.I):
+        if re.search(
+            r"\b(hb|hgb|wbc|rbc|platelet|esr|crp|creatinine|urea|bilirubin|sgot|sgpt|sodium|potassium|lab|reference\s*range|range)\b",
+            t,
+            re.I,
+        ):
             add_row(t)
 
     return _dedupe_by_fingerprint(rows)[:200]
@@ -725,7 +895,9 @@ def _extract_lab_fingerprints(investigation_text: str) -> set[str]:
     return fps
 
 
-def _find_values(entity_docs: list[dict[str, Any]], aliases: list[str], limit: int = 20) -> list[str]:
+def _find_values(
+    entity_docs: list[dict[str, Any]], aliases: list[str], limit: int = 20
+) -> list[str]:
     alias_keys = [_norm_key(a) for a in aliases]
     out: list[str] = []
     for entities in entity_docs:
@@ -749,7 +921,9 @@ def _find_values(entity_docs: list[dict[str, Any]], aliases: list[str], limit: i
     return _dedupe(out)[: max(1, limit)]
 
 
-def _investigation_lines(entity_docs: list[dict[str, Any]], evidence_lines: list[str] | None = None) -> list[str]:
+def _investigation_lines(
+    entity_docs: list[dict[str, Any]], evidence_lines: list[str] | None = None
+) -> list[str]:
     rows = _collect_investigation_rows(entity_docs, evidence_lines)
     if rows:
         return rows
@@ -774,7 +948,15 @@ def _investigation_lines(entity_docs: list[dict[str, Any]], evidence_lines: list
 
 
 def _deranged(lines: list[str]) -> str:
-    matched = [x for x in lines if re.search(r"\b(high|low|elevated|decreased|abnormal|deranged|positive|negative)\b", x, re.I)]
+    matched = [
+        x
+        for x in lines
+        if re.search(
+            r"\b(high|low|elevated|decreased|abnormal|deranged|positive|negative)\b",
+            x,
+            re.I,
+        )
+    ]
     if not matched:
         return "No deranged investigation values found."
     return "\n".join(matched[:40])
@@ -804,7 +986,16 @@ def _split_medicine_aliases(value: Any) -> list[str]:
         t_norm = re.sub(r"[^a-z0-9]+", "", t.lower())
         if len(t_norm) < 4:
             continue
-        if t_norm in {"inj", "injiv", "tablet", "tab", "capsule", "cap", "syrup", "syp"}:
+        if t_norm in {
+            "inj",
+            "injiv",
+            "tablet",
+            "tab",
+            "capsule",
+            "cap",
+            "syrup",
+            "syp",
+        }:
             continue
         out.append(t)
     return _dedupe(out)[:50]
@@ -812,7 +1003,11 @@ def _split_medicine_aliases(value: Any) -> list[str]:
 
 def _load_high_end_medicine_catalog(db: Session) -> list[dict[str, Any]]:
     from app.repositories import medicine_catalog_repo
-    base_catalog = medicine_catalog_repo.load_high_end_antibiotic_catalog(db, HIGH_END_ANTIBIOTICS) or []
+
+    base_catalog = (
+        medicine_catalog_repo.load_high_end_antibiotic_catalog(db, HIGH_END_ANTIBIOTICS)
+        or []
+    )
     enriched: list[dict[str, Any]] = []
 
     # IMPORTANT: don't append to the list we're iterating over.
@@ -829,7 +1024,9 @@ def _load_high_end_medicine_catalog(db: Session) -> list[dict[str, Any]]:
 
         component_hits = _match_high_end_medicines(searchable, HIGH_END_ANTIBIOTICS)
         if bool(row.get("is_high_end_antibiotic")):
-            display_name = medicine_name or (component_hits[0] if component_hits else aliases[0])
+            display_name = medicine_name or (
+                component_hits[0] if component_hits else aliases[0]
+            )
         elif component_hits:
             display_name = component_hits[0]
         else:
@@ -840,7 +1037,9 @@ def _load_high_end_medicine_catalog(db: Session) -> list[dict[str, Any]]:
     return list(base_catalog) + enriched
 
 
-def _extract_medicine_lookup_candidates(medicine_text: str, evidence_blob: str, limit: int = 25) -> list[str]:
+def _extract_medicine_lookup_candidates(
+    medicine_text: str, evidence_blob: str, limit: int = 25
+) -> list[str]:
     stop_exact = {
         "ns",
         "normal saline",
@@ -864,13 +1063,25 @@ def _extract_medicine_lookup_candidates(medicine_text: str, evidence_blob: str, 
             continue
 
         candidate = re.sub(r"^\s*\d+[.)\-:]*\s*", "", normalized)
-        candidate = re.sub(r"\b(?:inj(?:ection)?|tab(?:let)?|cap(?:sule)?|syrup|drop(?:s)?|iv|im|po|od|bd|tid|qid|hs|stat|sos)\b\.?", " ", candidate, flags=re.I)
-        candidate = re.sub(r"\b\d+(?:\.\d+)?\s*(?:mg|gm|g|ml|mcg|iu|units?)\b", " ", candidate, flags=re.I)
-        candidate = re.sub(r"\b(?:qty|x|for\s+\d+\s+days?)\b.*$", "", candidate, flags=re.I)
+        candidate = re.sub(
+            r"\b(?:inj(?:ection)?|tab(?:let)?|cap(?:sule)?|syrup|drop(?:s)?|iv|im|po|od|bd|tid|qid|hs|stat|sos)\b\.?",
+            " ",
+            candidate,
+            flags=re.I,
+        )
+        candidate = re.sub(
+            r"\b\d+(?:\.\d+)?\s*(?:mg|gm|g|ml|mcg|iu|units?)\b",
+            " ",
+            candidate,
+            flags=re.I,
+        )
+        candidate = re.sub(
+            r"\b(?:qty|x|for\s+\d+\s+days?)\b.*$", "", candidate, flags=re.I
+        )
         candidate = re.sub(r"[^A-Za-z0-9+/\- ]", " ", candidate)
         candidate = re.sub(r"\s{2,}", " ", candidate).strip(" .,:;-")
 
-        for token in (_split_medicine_aliases(candidate) or [candidate]):
+        for token in _split_medicine_aliases(candidate) or [candidate]:
             token_clean = re.sub(r"\s{2,}", " ", _txt(token)).strip(" .,:;-")
             if not token_clean:
                 continue
@@ -903,7 +1114,9 @@ def _flatten_text_values(value: Any, depth: int = 0, max_depth: int = 5) -> list
     return [t] if t else []
 
 
-def _lookup_high_end_for_candidate_via_custom_api(candidate: str, client: httpx.Client) -> list[str]:
+def _lookup_high_end_for_candidate_via_custom_api(
+    candidate: str, client: httpx.Client
+) -> list[str]:
     base_url = _txt(settings.drug_lookup_api_url)
     if not base_url:
         return []
@@ -925,9 +1138,14 @@ def _lookup_high_end_for_candidate_via_custom_api(candidate: str, client: httpx.
     return _match_high_end_medicines(text_blob, HIGH_END_ANTIBIOTICS)
 
 
-def _lookup_high_end_for_candidate_via_rxnav(candidate: str, client: httpx.Client) -> list[str]:
+def _lookup_high_end_for_candidate_via_rxnav(
+    candidate: str, client: httpx.Client
+) -> list[str]:
     try:
-        approx_resp = client.get(f"{_RXNAV_BASE_URL}/approximateTerm.json", params={"term": candidate, "maxEntries": 3})
+        approx_resp = client.get(
+            f"{_RXNAV_BASE_URL}/approximateTerm.json",
+            params={"term": candidate, "maxEntries": 3},
+        )
         approx_resp.raise_for_status()
         approx_payload = approx_resp.json()
     except Exception:
@@ -962,7 +1180,11 @@ def _lookup_high_end_for_candidate_via_rxnav(candidate: str, client: httpx.Clien
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            props = group.get("conceptProperties") if isinstance(group.get("conceptProperties"), list) else []
+            props = (
+                group.get("conceptProperties")
+                if isinstance(group.get("conceptProperties"), list)
+                else []
+            )
             for prop in props:
                 if not isinstance(prop, dict):
                     continue
@@ -998,9 +1220,13 @@ def _lookup_high_end_medicines_via_api(candidates: list[str]) -> tuple[list[str]
                 hits: list[str] = []
                 if _txt(getattr(settings, "drug_lookup_api_url", "")):
                     used_api_lookup = True
-                    hits = _lookup_high_end_for_candidate_via_custom_api(candidate, client)
+                    hits = _lookup_high_end_for_candidate_via_custom_api(
+                        candidate, client
+                    )
 
-                if (not hits) and bool(getattr(settings, "drug_lookup_use_rxnav_fallback", True)):
+                if (not hits) and bool(
+                    getattr(settings, "drug_lookup_use_rxnav_fallback", True)
+                ):
                     used_api_lookup = True
                     hits = _lookup_high_end_for_candidate_via_rxnav(candidate, client)
 
@@ -1014,7 +1240,9 @@ def _lookup_high_end_medicines_via_api(candidates: list[str]) -> tuple[list[str]
     return _dedupe(matched), used_api_lookup
 
 
-def _fuzzy_match_high_end_candidates(candidates: list[str], catalog: list[dict[str, Any]]) -> list[str]:
+def _fuzzy_match_high_end_candidates(
+    candidates: list[str], catalog: list[dict[str, Any]]
+) -> list[str]:
     candidate_list = _dedupe([_txt(x) for x in candidates if _txt(x)])
     if not candidate_list:
         return []
@@ -1045,7 +1273,9 @@ def _fuzzy_match_high_end_candidates(candidates: list[str], catalog: list[dict[s
         best_name = ""
         best_score = 0.0
         for alias_norm, display_name in alias_index:
-            if abs(len(alias_norm) - len(cand_norm)) > max(5, int(max(len(alias_norm), len(cand_norm)) * 0.45)):
+            if abs(len(alias_norm) - len(cand_norm)) > max(
+                5, int(max(len(alias_norm), len(cand_norm)) * 0.45)
+            ):
                 continue
             score = SequenceMatcher(None, cand_norm, alias_norm).ratio()
             if score > best_score:
@@ -1067,7 +1297,9 @@ def _match_high_end_medicines(text_blob: str, names_or_catalog: list[Any]) -> li
     for entry in names_or_catalog:
         if isinstance(entry, dict):
             display_name = _txt(entry.get("medicine_name"))
-            aliases = entry.get("aliases") if isinstance(entry.get("aliases"), list) else []
+            aliases = (
+                entry.get("aliases") if isinstance(entry.get("aliases"), list) else []
+            )
             candidate_aliases = aliases or [display_name]
         else:
             display_name = _txt(entry)
@@ -1102,23 +1334,42 @@ def _append_sentence_unique(base_text: Any, sentence: Any) -> str:
     return f"{base}{sep} {add}"
 
 
-def _assess_high_end_antibiotic_justification(db: Session, fields: dict[str, str], ctx: dict[str, Any]) -> dict[str, Any]:
+def _assess_high_end_antibiotic_justification(
+    db: Session, fields: dict[str, str], ctx: dict[str, Any]
+) -> dict[str, Any]:
     medicine_text = _txt(fields.get("medicine_used"))
     investigations_text = _txt(fields.get("investigation_finding_in_details"))
     findings_text = _txt(fields.get("findings"))
-    evidence_lines = ctx.get("evidence_lines") if isinstance(ctx.get("evidence_lines"), list) else []
+    evidence_lines = (
+        ctx.get("evidence_lines") if isinstance(ctx.get("evidence_lines"), list) else []
+    )
     latest_report_text = _txt(ctx.get("latest_report_text"))
-    evidence_blob = "\n".join([medicine_text, investigations_text, findings_text, "\n".join(evidence_lines[:200]), latest_report_text])
+    evidence_blob = "\n".join(
+        [
+            medicine_text,
+            investigations_text,
+            findings_text,
+            "\n".join(evidence_lines[:200]),
+            latest_report_text,
+        ]
+    )
 
     catalog = _load_high_end_medicine_catalog(db)
     matched_db = _match_high_end_medicines(evidence_blob, catalog)
     matched_static = _match_high_end_medicines(evidence_blob, HIGH_END_ANTIBIOTICS)
 
-    lookup_candidates = _extract_medicine_lookup_candidates(medicine_text, evidence_blob, limit=25)
+    lookup_candidates = _extract_medicine_lookup_candidates(
+        medicine_text, evidence_blob, limit=25
+    )
     matched_api, used_api_lookup = _lookup_high_end_medicines_via_api(lookup_candidates)
     matched_fuzzy = _fuzzy_match_high_end_candidates(lookup_candidates, catalog)
 
-    matched = _dedupe((matched_db or []) + (matched_static or []) + (matched_api or []) + (matched_fuzzy or []))
+    matched = _dedupe(
+        (matched_db or [])
+        + (matched_static or [])
+        + (matched_api or [])
+        + (matched_fuzzy or [])
+    )
 
     if not matched:
         return {
@@ -1133,18 +1384,38 @@ def _assess_high_end_antibiotic_justification(db: Session, fields: dict[str, str
 
     low = evidence_blob.lower()
 
-    has_culture_positive = bool(re.search(r"\b(?:blood|urine|pus|sputum)\s*culture\b", low))
-    has_culture_negative = bool(
-        re.search(r"\b(?:no|without|not\s+done|not\s+available|missing|absent)\s+(?:blood\s+|urine\s+|pus\s+|sputum\s+)?culture\b", low)
-        or re.search(r"\bculture\s*(?:report)?\s*(?:not\s+done|not\s+available|missing|absent)\b", low)
+    has_culture_positive = bool(
+        re.search(r"\b(?:blood|urine|pus|sputum)\s*culture\b", low)
     )
-    has_sensitivity_positive = bool(re.search(r"\b(?:sensitivity|susceptibility|antibiogram|c\s*&\s*s)\b", low))
-    has_sensitivity_negative = bool(re.search(r"\b(?:no|without|not\s+done|not\s+available|missing|absent)\s+(?:culture\s+)?(?:sensitivity|susceptibility|antibiogram)\b", low))
+    has_culture_negative = bool(
+        re.search(
+            r"\b(?:no|without|not\s+done|not\s+available|missing|absent)\s+(?:blood\s+|urine\s+|pus\s+|sputum\s+)?culture\b",
+            low,
+        )
+        or re.search(
+            r"\bculture\s*(?:report)?\s*(?:not\s+done|not\s+available|missing|absent)\b",
+            low,
+        )
+    )
+    has_sensitivity_positive = bool(
+        re.search(r"\b(?:sensitivity|susceptibility|antibiogram|c\s*&\s*s)\b", low)
+    )
+    has_sensitivity_negative = bool(
+        re.search(
+            r"\b(?:no|without|not\s+done|not\s+available|missing|absent)\s+(?:culture\s+)?(?:sensitivity|susceptibility|antibiogram)\b",
+            low,
+        )
+    )
 
-    has_culture_or_sensitivity = (has_culture_positive and not has_culture_negative) or (has_sensitivity_positive and not has_sensitivity_negative)
+    has_culture_or_sensitivity = (
+        has_culture_positive and not has_culture_negative
+    ) or (has_sensitivity_positive and not has_sensitivity_negative)
 
     has_sepsis_support = bool(
-        re.search(r"\b(sepsis|septic\s+shock|organ\s+dysfunction|hypotension|vasopressor|qsofa|sofa|procalcitonin|lactate|shock)\b", low)
+        re.search(
+            r"\b(sepsis|septic\s+shock|organ\s+dysfunction|hypotension|vasopressor|qsofa|sofa|procalcitonin|lactate|shock)\b",
+            low,
+        )
     )
 
     justification_present = bool(has_culture_or_sensitivity or has_sepsis_support)
@@ -1155,7 +1426,9 @@ def _assess_high_end_antibiotic_justification(db: Session, fields: dict[str, str
         missing.append("documented sepsis severity evidence")
 
     label = "Yes: " + ", ".join(matched)
-    label += " | Justification: " + ("Documented" if justification_present else "Missing")
+    label += " | Justification: " + (
+        "Documented" if justification_present else "Missing"
+    )
 
     return {
         "matched": matched,
@@ -1168,12 +1441,18 @@ def _assess_high_end_antibiotic_justification(db: Session, fields: dict[str, str
     }
 
 
-def _apply_high_end_antibiotic_guardrail(fields: dict[str, str], assessment: dict[str, Any]) -> dict[str, str]:
+def _apply_high_end_antibiotic_guardrail(
+    fields: dict[str, str], assessment: dict[str, Any]
+) -> dict[str, str]:
     out = dict(fields)
     label = _txt((assessment or {}).get("label")) or "No"
     out["high_end_antibiotic_for_rejection"] = label
 
-    matched = (assessment or {}).get("matched") if isinstance((assessment or {}).get("matched"), list) else []
+    matched = (
+        (assessment or {}).get("matched")
+        if isinstance((assessment or {}).get("matched"), list)
+        else []
+    )
     if not matched:
         return out
 
@@ -1191,26 +1470,36 @@ def _apply_high_end_antibiotic_guardrail(fields: dict[str, str], assessment: dic
 
     rec_low = _txt(out.get("recommendation")).lower()
     if any(tok in rec_low for tok in ["rejection", "reject", "inadmissible"]):
-        out["recommendation"] = _append_sentence_unique(out.get("recommendation"), concern)
+        out["recommendation"] = _append_sentence_unique(
+            out.get("recommendation"), concern
+        )
     elif any(tok in rec_low for tok in ["payable", "admissible", "approve"]):
-        out["recommendation"] = "Claim should be kept in query/review until high-end antibiotic justification is documented."
+        out["recommendation"] = (
+            "Claim should be kept in query/review until high-end antibiotic justification is documented."
+        )
     else:
         out["recommendation"] = _append_sentence_unique(
             out.get("recommendation"),
-            "Please provide antibiotic justification (culture/sensitivity/sepsis evidence) before final approval."
+            "Please provide antibiotic justification (culture/sensitivity/sepsis evidence) before final approval.",
         )
 
     return out
+
 
 def _normalize_recommendation_bucket(value: Any) -> str:
     txt = _txt(value).lower()
     if not txt:
         return "unknown"
-    if any(token in txt for token in ["reject", "rejection", "inadmiss", "not justified"]):
+    if any(
+        token in txt for token in ["reject", "rejection", "inadmiss", "not justified"]
+    ):
         return "reject"
     if any(token in txt for token in ["approve", "admissible", "payable"]):
         return "approve"
-    if any(token in txt for token in ["query", "need_more_evidence", "manual_review", "manual review"]):
+    if any(
+        token in txt
+        for token in ["query", "need_more_evidence", "manual_review", "manual review"]
+    ):
         return "query"
     return "unknown"
 
@@ -1235,9 +1524,17 @@ def _clean_rule_note_text(value: Any) -> str:
     txt = re.sub(r"\bMissing evidence\s*:\s*", "", txt, flags=re.I)
     txt = re.sub(r"\s+", " ", txt).strip(" .;:-")
     return txt
-def _rulewise_conclusion_from_decision(decision: dict[str, Any], decision_payload: dict[str, Any]) -> str:
+
+
+def _rulewise_conclusion_from_decision(
+    decision: dict[str, Any], decision_payload: dict[str, Any]
+) -> str:
     payload = decision_payload if isinstance(decision_payload, dict) else {}
-    reporting = payload.get("source_summary", {}).get("reporting") if isinstance(payload.get("source_summary"), dict) else {}
+    reporting = (
+        payload.get("source_summary", {}).get("reporting")
+        if isinstance(payload.get("source_summary"), dict)
+        else {}
+    )
     if isinstance(reporting, dict):
         txt = _clean_rule_note_text(reporting.get("conclusion"))
         if txt:
@@ -1260,15 +1557,27 @@ def _rulewise_conclusion_from_decision(decision: dict[str, Any], decision_payloa
             continue
 
         source_name = _txt(item.get("source")).lower()
-        if source_name and source_name not in {"openai_claim_rules", "openai_diagnosis_criteria"}:
+        if source_name and source_name not in {
+            "openai_claim_rules",
+            "openai_diagnosis_criteria",
+        }:
             continue
 
         code = _txt(item.get("code") or item.get("rule_id") or "RULE").upper()
         if code == "OPENAI_MERGED_REVIEW":
             continue
 
-        note = _clean_rule_note_text(item.get("note") or item.get("why_triggered") or item.get("summary") or item.get("reason"))
-        missing = item.get("missing_evidence") if isinstance(item.get("missing_evidence"), list) else []
+        note = _clean_rule_note_text(
+            item.get("note")
+            or item.get("why_triggered")
+            or item.get("summary")
+            or item.get("reason")
+        )
+        missing = (
+            item.get("missing_evidence")
+            if isinstance(item.get("missing_evidence"), list)
+            else []
+        )
         if note:
             key = note.lower()
             if key not in seen_points:
@@ -1299,51 +1608,65 @@ def _rulewise_conclusion_from_decision(decision: dict[str, Any], decision_payloa
         parts.append("Required clarifications: " + "; ".join(missing_items[:8]) + ".")
     return " ".join(parts).strip()
 
+
 def _load_context(db: Session, claim_id: UUID) -> dict[str, Any]:
-    claim = db.execute(
-        text(
-            """
+    claim = (
+        db.execute(
+            text(
+                """
             SELECT c.id, c.external_claim_id, c.patient_name, c.patient_identifier,
                    c.status, c.assigned_doctor_id, l.legacy_payload
             FROM claims c
             LEFT JOIN claim_legacy_data l ON l.claim_id = c.id
             WHERE c.id = :claim_id
             """
-        ),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
+            ),
+            {"claim_id": str(claim_id)},
+        )
+        .mappings()
+        .first()
+    )
     if claim is None:
         raise ClaimStructuringError("claim not found")
 
-    decision = db.execute(
-        text(
-            """
+    decision = (
+        db.execute(
+            text(
+                """
             SELECT recommendation, decision_payload, rule_hits, explanation_summary, generated_at
             FROM decision_results
             WHERE claim_id = :claim_id
             ORDER BY generated_at DESC
             LIMIT 1
             """
-        ),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
+            ),
+            {"claim_id": str(claim_id)},
+        )
+        .mappings()
+        .first()
+    )
 
-    latest_report = db.execute(
-        text(
-            """
+    latest_report = (
+        db.execute(
+            text(
+                """
             SELECT report_markdown
             FROM report_versions
             WHERE claim_id = :claim_id
             ORDER BY created_at DESC, version_no DESC
             LIMIT 1
             """
-        ),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
+            ),
+            {"claim_id": str(claim_id)},
+        )
+        .mappings()
+        .first()
+    )
 
-    docs = db.execute(
-        text(
-            """
+    docs = (
+        db.execute(
+            text(
+                """
             SELECT cd.id AS document_id, cd.file_name, cd.mime_type, cd.uploaded_at,
                    de.extracted_entities, de.evidence_refs, de.confidence
             FROM claim_documents cd
@@ -1357,9 +1680,12 @@ def _load_context(db: Session, claim_id: UUID) -> dict[str, Any]:
             WHERE cd.claim_id = :claim_id
             ORDER BY cd.uploaded_at ASC
             """
-        ),
-        {"claim_id": str(claim_id)},
-    ).mappings().all()
+            ),
+            {"claim_id": str(claim_id)},
+        )
+        .mappings()
+        .all()
+    )
 
     entity_docs: list[dict[str, Any]] = []
     evidence_lines: list[str] = []
@@ -1371,7 +1697,9 @@ def _load_context(db: Session, claim_id: UUID) -> dict[str, Any]:
         if isinstance(refs, list):
             for item in refs:
                 if isinstance(item, dict):
-                    s = _txt(item.get("snippet") or item.get("text") or item.get("value"))
+                    s = _txt(
+                        item.get("snippet") or item.get("text") or item.get("value")
+                    )
                 else:
                     s = _txt(item)
                 if s:
@@ -1383,7 +1711,11 @@ def _load_context(db: Session, claim_id: UUID) -> dict[str, Any]:
         "decision": dict(decision) if decision else {},
         "entity_docs": entity_docs,
         "evidence_lines": _dedupe(evidence_lines)[:300],
-        "latest_report_text": _strip_html((latest_report or {}).get("report_markdown")) if latest_report else "",
+        "latest_report_text": (
+            _strip_html((latest_report or {}).get("report_markdown"))
+            if latest_report
+            else ""
+        ),
     }
 
 
@@ -1391,8 +1723,12 @@ def _heuristic_fields(ctx: dict[str, Any]) -> dict[str, str]:
     claim = ctx.get("claim") or {}
     legacy = ctx.get("legacy") if isinstance(ctx.get("legacy"), dict) else {}
     decision = ctx.get("decision") if isinstance(ctx.get("decision"), dict) else {}
-    entity_docs = ctx.get("entity_docs") if isinstance(ctx.get("entity_docs"), list) else []
-    evidence_lines = ctx.get("evidence_lines") if isinstance(ctx.get("evidence_lines"), list) else []
+    entity_docs = (
+        ctx.get("entity_docs") if isinstance(ctx.get("entity_docs"), list) else []
+    )
+    evidence_lines = (
+        ctx.get("evidence_lines") if isinstance(ctx.get("evidence_lines"), list) else []
+    )
     latest_report_text = _txt(ctx.get("latest_report_text"))
 
     investigations = _investigation_lines(entity_docs, evidence_lines)
@@ -1420,7 +1756,9 @@ def _heuristic_fields(ctx: dict[str, Any]) -> dict[str, str]:
         ),
         120,
     )
-    medicines = _merge_multiline("\n".join(medicines_from_entities), "\n".join(medicines_from_blob), 120)
+    medicines = _merge_multiline(
+        "\n".join(medicines_from_entities), "\n".join(medicines_from_blob), 120
+    )
 
     doctor_from_entities = (
         _find_values(
@@ -1439,7 +1777,9 @@ def _heuristic_fields(ctx: dict[str, Any]) -> dict[str, str]:
         )
         or [""]
     )[0]
-    doctor_from_blob = _extract_doctor_from_text_blob("\n".join([latest_report_text, "\n".join(evidence_lines)]))
+    doctor_from_blob = _extract_doctor_from_text_blob(
+        "\n".join([latest_report_text, "\n".join(evidence_lines)])
+    )
 
     registration_from_entities = (
         _find_values(
@@ -1458,13 +1798,23 @@ def _heuristic_fields(ctx: dict[str, Any]) -> dict[str, str]:
         )
         or [""]
     )[0]
-    registration_from_blob = _extract_registration_from_text_blob("\n".join([latest_report_text, "\n".join(evidence_lines)]))
+    registration_from_blob = _extract_registration_from_text_blob(
+        "\n".join([latest_report_text, "\n".join(evidence_lines)])
+    )
 
-    decision_payload = _safe_json(decision.get("decision_payload"), {}) if isinstance(decision, dict) else {}
+    decision_payload = (
+        _safe_json(decision.get("decision_payload"), {})
+        if isinstance(decision, dict)
+        else {}
+    )
     recommendation_raw = _first(
         decision.get("recommendation"),
         decision_payload.get("recommendation"),
-        _find_values(entity_docs, ["final_recommendation", "recommendation"], 1)[0] if _find_values(entity_docs, ["final_recommendation", "recommendation"], 1) else "",
+        (
+            _find_values(entity_docs, ["final_recommendation", "recommendation"], 1)[0]
+            if _find_values(entity_docs, ["final_recommendation", "recommendation"], 1)
+            else ""
+        ),
         default="need_more_evidence",
     )
     recommendation_bucket = _normalize_recommendation_bucket(recommendation_raw)
@@ -1475,45 +1825,311 @@ def _heuristic_fields(ctx: dict[str, Any]) -> dict[str, str]:
         else {}
     )
     recommendation = _first(
-        reporting_block.get("recommendation_text") if isinstance(reporting_block, dict) else "",
+        (
+            reporting_block.get("recommendation_text")
+            if isinstance(reporting_block, dict)
+            else ""
+        ),
         _recommendation_sentence_for_bucket(recommendation_bucket),
         "Claim is kept in query. Please provide desired information/documents.",
     )
-    if re.search(r"\b(recommended\s+for\s+rejection|reject(?:ion|ed)?|inadmissible)\b", recommendation, flags=re.I):
+    if re.search(
+        r"\b(recommended\s+for\s+rejection|reject(?:ion|ed)?|inadmissible)\b",
+        recommendation,
+        flags=re.I,
+    ):
         recommendation = "Claim is kept in query/pending clarification. Please provide required clinical evidence for final decision."
 
     decision_summary = _txt((decision or {}).get("explanation_summary"))
-    if re.match(r"^(reject triggers|query triggers|approval signals)\s*:\s*", decision_summary, flags=re.I):
+    if re.match(
+        r"^(reject triggers|query triggers|approval signals)\s*:\s*",
+        decision_summary,
+        flags=re.I,
+    ):
         decision_summary = ""
 
-    rulewise_conclusion = _rulewise_conclusion_from_decision(decision if isinstance(decision, dict) else {}, decision_payload)
+    rulewise_conclusion = _rulewise_conclusion_from_decision(
+        decision if isinstance(decision, dict) else {}, decision_payload
+    )
     findings_text = _clean_findings_text(
         _merge_multiline(
-            _find_values(entity_docs, ["major_diagnostic_finding", "clinical_findings", "diagnostic_finding", "hospital_finding", "summary"], 8),
+            _find_values(
+                entity_docs,
+                [
+                    "major_diagnostic_finding",
+                    "clinical_findings",
+                    "diagnostic_finding",
+                    "hospital_finding",
+                    "summary",
+                ],
+                8,
+            ),
             "\n".join(evidence_lines[:40]),
             80,
         )
     )
 
     fields = {
-        "company_name": _first(_find_values(entity_docs, ["company_name", "insurance_company", "insurer", "tpa", "insurance_tpa", "payer_name"], 1)[0] if _find_values(entity_docs, ["company_name", "insurance_company", "insurer", "tpa", "insurance_tpa", "payer_name"], 1) else "", legacy.get("company_name"), "Medi Assist Insurance TPA Pvt. Ltd."),
-        "claim_type": _first(_find_values(entity_docs, ["claim_type", "case_type"], 1)[0] if _find_values(entity_docs, ["claim_type", "case_type"], 1) else "", legacy.get("claim_type"), "-"),
-        "insured_name": _first(_find_values(entity_docs, ["insured_name", "name", "patient_name", "insured", "beneficiary", "policy_holder_name"], 1)[0] if _find_values(entity_docs, ["insured_name", "name", "patient_name", "insured", "beneficiary", "policy_holder_name"], 1) else "", legacy.get("benef_name"), claim.get("patient_name"), "-"),
-        "hospital_name": _clean_hospital_name(_first(_find_values(entity_docs, ["hospital_name", "hospital", "provider_hospital", "treating_hospital", "facility_name"], 1)[0] if _find_values(entity_docs, ["hospital_name", "hospital", "provider_hospital", "treating_hospital", "facility_name"], 1) else "", legacy.get("hospital_name"), "-")) or "-",
-        "treating_doctor": _first(doctor_from_entities, doctor_from_blob, legacy.get("treating_doctor"), "-"),
-        "treating_doctor_registration_number": _first(registration_from_entities, registration_from_blob, legacy.get("doctor_registration_number"), "-"),
-        "doa": _first(legacy.get("doa_date"), legacy.get("date_of_admission"), legacy.get("admission_date"), _find_values(entity_docs, ["doa", "doa_date", "date_of_admission", "admission_date"], 1)[0] if _find_values(entity_docs, ["doa", "doa_date", "date_of_admission", "admission_date"], 1) else ""),
-        "dod": _first(legacy.get("dod_date"), legacy.get("date_of_discharge"), legacy.get("discharge_date"), _find_values(entity_docs, ["dod", "dod_date", "date_of_discharge", "discharge_date"], 1)[0] if _find_values(entity_docs, ["dod", "dod_date", "date_of_discharge", "discharge_date"], 1) else ""),
-        "diagnosis": _first(_find_values(entity_docs, ["diagnosis", "final_diagnosis", "provisional_diagnosis", "primary_diagnosis"], 1)[0] if _find_values(entity_docs, ["diagnosis", "final_diagnosis", "provisional_diagnosis", "primary_diagnosis"], 1) else "", legacy.get("diagnosis"), "-"),
-        "complaints": _first(_find_values(entity_docs, ["chief_complaints", "chief_complaint", "presenting_complaints", "complaints"], 1)[0] if _find_values(entity_docs, ["chief_complaints", "chief_complaint", "presenting_complaints", "complaints"], 1) else "", legacy.get("complaints"), "-"),
+        "company_name": _first(
+            (
+                _find_values(
+                    entity_docs,
+                    [
+                        "company_name",
+                        "insurance_company",
+                        "insurer",
+                        "tpa",
+                        "insurance_tpa",
+                        "payer_name",
+                    ],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    [
+                        "company_name",
+                        "insurance_company",
+                        "insurer",
+                        "tpa",
+                        "insurance_tpa",
+                        "payer_name",
+                    ],
+                    1,
+                )
+                else ""
+            ),
+            legacy.get("company_name"),
+            "Medi Assist Insurance TPA Pvt. Ltd.",
+        ),
+        "claim_type": _first(
+            (
+                _find_values(entity_docs, ["claim_type", "case_type"], 1)[0]
+                if _find_values(entity_docs, ["claim_type", "case_type"], 1)
+                else ""
+            ),
+            legacy.get("claim_type"),
+            "-",
+        ),
+        "insured_name": _first(
+            (
+                _find_values(
+                    entity_docs,
+                    [
+                        "insured_name",
+                        "name",
+                        "patient_name",
+                        "insured",
+                        "beneficiary",
+                        "policy_holder_name",
+                    ],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    [
+                        "insured_name",
+                        "name",
+                        "patient_name",
+                        "insured",
+                        "beneficiary",
+                        "policy_holder_name",
+                    ],
+                    1,
+                )
+                else ""
+            ),
+            legacy.get("benef_name"),
+            claim.get("patient_name"),
+            "-",
+        ),
+        "hospital_name": _clean_hospital_name(
+            _first(
+                (
+                    _find_values(
+                        entity_docs,
+                        [
+                            "hospital_name",
+                            "hospital",
+                            "provider_hospital",
+                            "treating_hospital",
+                            "facility_name",
+                        ],
+                        1,
+                    )[0]
+                    if _find_values(
+                        entity_docs,
+                        [
+                            "hospital_name",
+                            "hospital",
+                            "provider_hospital",
+                            "treating_hospital",
+                            "facility_name",
+                        ],
+                        1,
+                    )
+                    else ""
+                ),
+                legacy.get("hospital_name"),
+                "-",
+            )
+        )
+        or "-",
+        "treating_doctor": _first(
+            doctor_from_entities, doctor_from_blob, legacy.get("treating_doctor"), "-"
+        ),
+        "treating_doctor_registration_number": _first(
+            registration_from_entities,
+            registration_from_blob,
+            legacy.get("doctor_registration_number"),
+            "-",
+        ),
+        "doa": _first(
+            legacy.get("doa_date"),
+            legacy.get("date_of_admission"),
+            legacy.get("admission_date"),
+            (
+                _find_values(
+                    entity_docs,
+                    ["doa", "doa_date", "date_of_admission", "admission_date"],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    ["doa", "doa_date", "date_of_admission", "admission_date"],
+                    1,
+                )
+                else ""
+            ),
+        ),
+        "dod": _first(
+            legacy.get("dod_date"),
+            legacy.get("date_of_discharge"),
+            legacy.get("discharge_date"),
+            (
+                _find_values(
+                    entity_docs,
+                    ["dod", "dod_date", "date_of_discharge", "discharge_date"],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    ["dod", "dod_date", "date_of_discharge", "discharge_date"],
+                    1,
+                )
+                else ""
+            ),
+        ),
+        "diagnosis": _first(
+            (
+                _find_values(
+                    entity_docs,
+                    [
+                        "diagnosis",
+                        "final_diagnosis",
+                        "provisional_diagnosis",
+                        "primary_diagnosis",
+                    ],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    [
+                        "diagnosis",
+                        "final_diagnosis",
+                        "provisional_diagnosis",
+                        "primary_diagnosis",
+                    ],
+                    1,
+                )
+                else ""
+            ),
+            legacy.get("diagnosis"),
+            "-",
+        ),
+        "complaints": _first(
+            (
+                _find_values(
+                    entity_docs,
+                    [
+                        "chief_complaints",
+                        "chief_complaint",
+                        "presenting_complaints",
+                        "complaints",
+                    ],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    [
+                        "chief_complaints",
+                        "chief_complaint",
+                        "presenting_complaints",
+                        "complaints",
+                    ],
+                    1,
+                )
+                else ""
+            ),
+            legacy.get("complaints"),
+            "-",
+        ),
         "findings": findings_text,
-        "investigation_finding_in_details": "\n".join(investigations[:120]) if investigations else "No investigation reports available.",
+        "investigation_finding_in_details": (
+            "\n".join(investigations[:120])
+            if investigations
+            else "No investigation reports available."
+        ),
         "medicine_used": medicines,
-        "high_end_antibiotic_for_rejection": _high_end_antibiotic("\n".join([medicines, "\n".join(investigations[:120]), "\n".join(evidence_lines[:120])])),
+        "high_end_antibiotic_for_rejection": _high_end_antibiotic(
+            "\n".join(
+                [
+                    medicines,
+                    "\n".join(investigations[:120]),
+                    "\n".join(evidence_lines[:120]),
+                ]
+            )
+        ),
         "deranged_investigation": _deranged(investigations),
-        "claim_amount": _first(_parse_amount(legacy.get("claim_amount")), _parse_amount(legacy.get("claimed_amount")), _parse_amount(legacy.get("bill_amount")), _parse_amount(_find_values(entity_docs, ["claim_amount", "claimed_amount", "bill_amount", "amount_claimed"], 1)[0] if _find_values(entity_docs, ["claim_amount", "claimed_amount", "bill_amount", "amount_claimed"], 1) else ""), "-"),
-        "conclusion": _first(rulewise_conclusion, decision_summary, _find_values(entity_docs, ["detailed_conclusion", "conclusion", "rationale", "decision"], 1)[0] if _find_values(entity_docs, ["detailed_conclusion", "conclusion", "rationale", "decision"], 1) else "", "Claim reviewed based on available records."),
-        "recommendation": _first(recommendation, "Claim kept in query for medical clarification."),
+        "claim_amount": _first(
+            _parse_amount(legacy.get("claim_amount")),
+            _parse_amount(legacy.get("claimed_amount")),
+            _parse_amount(legacy.get("bill_amount")),
+            _parse_amount(
+                _find_values(
+                    entity_docs,
+                    ["claim_amount", "claimed_amount", "bill_amount", "amount_claimed"],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    ["claim_amount", "claimed_amount", "bill_amount", "amount_claimed"],
+                    1,
+                )
+                else ""
+            ),
+            "-",
+        ),
+        "conclusion": _first(
+            rulewise_conclusion,
+            decision_summary,
+            (
+                _find_values(
+                    entity_docs,
+                    ["detailed_conclusion", "conclusion", "rationale", "decision"],
+                    1,
+                )[0]
+                if _find_values(
+                    entity_docs,
+                    ["detailed_conclusion", "conclusion", "rationale", "decision"],
+                    1,
+                )
+                else ""
+            ),
+            "Claim reviewed based on available records.",
+        ),
+        "recommendation": _first(
+            recommendation, "Claim kept in query for medical clarification."
+        ),
     }
 
     out: dict[str, str] = {}
@@ -1525,9 +2141,16 @@ def _heuristic_fields(ctx: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _merge_llm_with_heuristic_fields(llm_fields: dict[str, str], heuristic_fields: dict[str, str]) -> dict[str, str]:
+def _merge_llm_with_heuristic_fields(
+    llm_fields: dict[str, str], heuristic_fields: dict[str, str]
+) -> dict[str, str]:
     out: dict[str, str] = {}
-    multiline_keys = {"findings", "investigation_finding_in_details", "medicine_used", "conclusion"}
+    multiline_keys = {
+        "findings",
+        "investigation_finding_in_details",
+        "medicine_used",
+        "conclusion",
+    }
 
     for key in FIELD_KEYS:
         llm_val = _txt((llm_fields or {}).get(key)) or "-"
@@ -1542,18 +2165,28 @@ def _merge_llm_with_heuristic_fields(llm_fields: dict[str, str], heuristic_field
         else:
             merged = llm_val
 
-        if key in {"treating_doctor", "treating_doctor_registration_number"} and merged == "-":
+        if (
+            key in {"treating_doctor", "treating_doctor_registration_number"}
+            and merged == "-"
+        ):
             merged = heur_val
 
         out[key] = merged or "-"
 
     out["high_end_antibiotic_for_rejection"] = _high_end_antibiotic(
-        "\n".join([out.get("medicine_used", ""), out.get("investigation_finding_in_details", "")])
+        "\n".join(
+            [
+                out.get("medicine_used", ""),
+                out.get("investigation_finding_in_details", ""),
+            ]
+        )
     )
     return out
 
 
-def _fraud_pattern_compare(db: Session, claim_id: UUID, fields: dict[str, str], claim_ctx: dict[str, Any]) -> dict[str, Any]:
+def _fraud_pattern_compare(
+    db: Session, claim_id: UUID, fields: dict[str, str], claim_ctx: dict[str, Any]
+) -> dict[str, Any]:
     insured_name = _txt(fields.get("insured_name"))
     patient_name = _txt((claim_ctx or {}).get("patient_name"))
     patient_identifier = _txt((claim_ctx or {}).get("patient_identifier"))
@@ -1561,9 +2194,10 @@ def _fraud_pattern_compare(db: Session, claim_id: UUID, fields: dict[str, str], 
     if not insured_name and not patient_name and not patient_identifier:
         return {"suspicious": False, "matched_claims": [], "notes": []}
 
-    rows = db.execute(
-        text(
-            """
+    rows = (
+        db.execute(
+            text(
+                """
             SELECT csd.claim_id, c.external_claim_id, csd.hospital_name, csd.treating_doctor,
                    csd.treating_doctor_registration_number, csd.diagnosis,
                    csd.investigation_finding_in_details, csd.claim_amount, csd.doa, csd.dod
@@ -1578,16 +2212,21 @@ def _fraud_pattern_compare(db: Session, claim_id: UUID, fields: dict[str, str], 
             ORDER BY csd.updated_at DESC
             LIMIT 80
             """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "insured_name": insured_name,
-            "patient_name": patient_name,
-            "patient_identifier": patient_identifier,
-        },
-    ).mappings().all()
+            ),
+            {
+                "claim_id": str(claim_id),
+                "insured_name": insured_name,
+                "patient_name": patient_name,
+                "patient_identifier": patient_identifier,
+            },
+        )
+        .mappings()
+        .all()
+    )
 
-    current_lab = _extract_lab_fingerprints(_txt(fields.get("investigation_finding_in_details")))
+    current_lab = _extract_lab_fingerprints(
+        _txt(fields.get("investigation_finding_in_details"))
+    )
     current_reg = _norm_key(fields.get("treating_doctor_registration_number"))
     current_doc = _norm_key(fields.get("treating_doctor"))
     current_hospital = _norm_key(fields.get("hospital_name"))
@@ -1598,9 +2237,15 @@ def _fraud_pattern_compare(db: Session, claim_id: UUID, fields: dict[str, str], 
 
     for row in rows:
         prev_claim_id = _txt(row.get("external_claim_id") or row.get("claim_id"))
-        prev_lab = _extract_lab_fingerprints(_txt(row.get("investigation_finding_in_details")))
-        overlap = len(current_lab.intersection(prev_lab)) if current_lab and prev_lab else 0
-        min_size = min(len(current_lab), len(prev_lab)) if current_lab and prev_lab else 0
+        prev_lab = _extract_lab_fingerprints(
+            _txt(row.get("investigation_finding_in_details"))
+        )
+        overlap = (
+            len(current_lab.intersection(prev_lab)) if current_lab and prev_lab else 0
+        )
+        min_size = (
+            min(len(current_lab), len(prev_lab)) if current_lab and prev_lab else 0
+        )
         overlap_ratio = (overlap / min_size) if min_size else 0.0
 
         prev_reg = _norm_key(row.get("treating_doctor_registration_number"))
@@ -1608,17 +2253,25 @@ def _fraud_pattern_compare(db: Session, claim_id: UUID, fields: dict[str, str], 
         prev_hospital = _norm_key(row.get("hospital_name"))
         prev_diag = _norm_key(row.get("diagnosis"))
 
-        doctor_match = bool(current_reg and prev_reg and current_reg == prev_reg) or bool(current_doc and prev_doc and current_doc == prev_doc)
-        facility_match = bool(current_hospital and prev_hospital and current_hospital == prev_hospital)
+        doctor_match = bool(
+            current_reg and prev_reg and current_reg == prev_reg
+        ) or bool(current_doc and prev_doc and current_doc == prev_doc)
+        facility_match = bool(
+            current_hospital and prev_hospital and current_hospital == prev_hospital
+        )
         diag_match = bool(current_diag and prev_diag and current_diag == prev_diag)
 
         suspicious = False
         if overlap >= 3 and overlap_ratio >= 0.60 and doctor_match:
             suspicious = True
-            notes.append(f"High overlap in lab pattern with claim {prev_claim_id} (overlap {overlap}/{min_size}).")
+            notes.append(
+                f"High overlap in lab pattern with claim {prev_claim_id} (overlap {overlap}/{min_size})."
+            )
         elif overlap >= 4 and overlap_ratio >= 0.70 and facility_match and diag_match:
             suspicious = True
-            notes.append(f"Lab+diagnosis+facility pattern similar to claim {prev_claim_id}.")
+            notes.append(
+                f"Lab+diagnosis+facility pattern similar to claim {prev_claim_id}."
+            )
 
         if suspicious:
             matched_claims.append(prev_claim_id)
@@ -1632,24 +2285,51 @@ def _fraud_pattern_compare(db: Session, claim_id: UUID, fields: dict[str, str], 
     }
 
 
-
-def _hospital_trend_compare(db: Session, claim_id: UUID, fields: dict[str, str]) -> dict[str, Any]:
+def _hospital_trend_compare(
+    db: Session, claim_id: UUID, fields: dict[str, str]
+) -> dict[str, Any]:
     hospital_name = _txt(fields.get("hospital_name"))
     if not hospital_name or hospital_name == "-":
         return {
             "hospital_name": "",
             "trend_alert": False,
             "notes": [],
-            "overall": {"total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
-            "recent": {"window": 0, "total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
-            "doctor_recent": {"total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
+            "overall": {
+                "total": 0,
+                "reject": 0,
+                "approve": 0,
+                "query": 0,
+                "unknown": 0,
+                "reject_rate": 0.0,
+                "query_rate": 0.0,
+            },
+            "recent": {
+                "window": 0,
+                "total": 0,
+                "reject": 0,
+                "approve": 0,
+                "query": 0,
+                "unknown": 0,
+                "reject_rate": 0.0,
+                "query_rate": 0.0,
+            },
+            "doctor_recent": {
+                "total": 0,
+                "reject": 0,
+                "approve": 0,
+                "query": 0,
+                "unknown": 0,
+                "reject_rate": 0.0,
+                "query_rate": 0.0,
+            },
             "recent_claim_ids": [],
             "top_diagnosis": [],
         }
 
-    rows = db.execute(
-        text(
-            """
+    rows = (
+        db.execute(
+            text(
+                """
             SELECT c.external_claim_id,
                    csd.hospital_name,
                    csd.treating_doctor,
@@ -1671,9 +2351,12 @@ def _hospital_trend_compare(db: Session, claim_id: UUID, fields: dict[str, str])
             ORDER BY COALESCE(dr.generated_at, csd.updated_at) DESC
             LIMIT 300
             """
-        ),
-        {"claim_id": str(claim_id), "hospital_name": hospital_name},
-    ).mappings().all()
+            ),
+            {"claim_id": str(claim_id), "hospital_name": hospital_name},
+        )
+        .mappings()
+        .all()
+    )
 
     def _metrics(data_rows: list[dict[str, Any]]) -> dict[str, Any]:
         total = len(data_rows)
@@ -1717,9 +2400,13 @@ def _hospital_trend_compare(db: Session, claim_id: UUID, fields: dict[str, str])
         for r in row_dicts:
             prev_doc = _norm_key(r.get("treating_doctor"))
             prev_reg = _norm_key(r.get("treating_doctor_registration_number"))
-            if (current_reg and prev_reg and current_reg == prev_reg) or (current_doc and prev_doc and current_doc == prev_doc):
+            if (current_reg and prev_reg and current_reg == prev_reg) or (
+                current_doc and prev_doc and current_doc == prev_doc
+            ):
                 same_doctor_rows.append(r)
-    doctor_recent = _metrics(same_doctor_rows[:recent_window]) if same_doctor_rows else _metrics([])
+    doctor_recent = (
+        _metrics(same_doctor_rows[:recent_window]) if same_doctor_rows else _metrics([])
+    )
 
     diag_counter: Counter[str] = Counter()
     for r in recent_rows:
@@ -1727,7 +2414,13 @@ def _hospital_trend_compare(db: Session, claim_id: UUID, fields: dict[str, str])
         if d and d != "-":
             diag_counter[d] += 1
     top_diagnosis = [name for (name, _count) in diag_counter.most_common(5)]
-    recent_claim_ids = _dedupe([_txt(r.get("external_claim_id")) for r in recent_rows if _txt(r.get("external_claim_id"))])[:10]
+    recent_claim_ids = _dedupe(
+        [
+            _txt(r.get("external_claim_id"))
+            for r in recent_rows
+            if _txt(r.get("external_claim_id"))
+        ]
+    )[:10]
 
     notes: list[str] = []
     trend_alert = False
@@ -1740,7 +2433,10 @@ def _hospital_trend_compare(db: Session, claim_id: UUID, fields: dict[str, str])
         notes.append(
             f"Hospital query trend high: {recent['query']} of {recent['total']} recent claims queried ({recent['query_rate']}%)."
         )
-    if doctor_recent.get("total", 0) >= 5 and doctor_recent.get("reject_rate", 0.0) >= 70.0:
+    if (
+        doctor_recent.get("total", 0) >= 5
+        and doctor_recent.get("reject_rate", 0.0) >= 70.0
+    ):
         trend_alert = True
         notes.append(
             f"Same treating doctor trend high: {doctor_recent['reject']} of {doctor_recent['total']} hospital-linked claims rejected ({doctor_recent['reject_rate']}%)."
@@ -1756,7 +2452,11 @@ def _hospital_trend_compare(db: Session, claim_id: UUID, fields: dict[str, str])
         "recent_claim_ids": recent_claim_ids,
         "top_diagnosis": top_diagnosis,
     }
-def _apply_fraud_signals_to_fields(fields: dict[str, str], fraud_check: dict[str, Any]) -> dict[str, str]:
+
+
+def _apply_fraud_signals_to_fields(
+    fields: dict[str, str], fraud_check: dict[str, Any]
+) -> dict[str, str]:
     out = dict(fields)
     if not bool((fraud_check or {}).get("suspicious")):
         return out
@@ -1781,14 +2481,23 @@ def _apply_fraud_signals_to_fields(fields: dict[str, str], fraud_check: dict[str
         )
     return out
 
-def _apply_hospital_trend_signals_to_fields(fields: dict[str, str], hospital_trend: dict[str, Any]) -> dict[str, str]:
+
+def _apply_hospital_trend_signals_to_fields(
+    fields: dict[str, str], hospital_trend: dict[str, Any]
+) -> dict[str, str]:
     out = dict(fields)
     if not bool((hospital_trend or {}).get("trend_alert")):
         return out
 
-    recent = (hospital_trend or {}).get("recent") if isinstance((hospital_trend or {}).get("recent"), dict) else {}
+    recent = (
+        (hospital_trend or {}).get("recent")
+        if isinstance((hospital_trend or {}).get("recent"), dict)
+        else {}
+    )
     notes = "\n".join((hospital_trend or {}).get("notes") or [])
-    hospital_name = _txt((hospital_trend or {}).get("hospital_name")) or _txt(out.get("hospital_name"))
+    hospital_name = _txt((hospital_trend or {}).get("hospital_name")) or _txt(
+        out.get("hospital_name")
+    )
     trend_note = (
         f"Hospital learning alert: {hospital_name} shows higher rejection trend "
         f"({recent.get('reject', 0)}/{recent.get('total', 0)} in recent cases, {recent.get('reject_rate', 0.0)}%)."
@@ -1807,6 +2516,7 @@ def _apply_hospital_trend_signals_to_fields(fields: dict[str, str], hospital_tre
             20,
         )
     return out
+
 
 def _extract_rule_names_from_hits(rule_hits: Any, limit: int = 80) -> list[str]:
     hits = _safe_json(rule_hits, [])
@@ -1836,7 +2546,9 @@ def _extract_rule_names_from_hits(rule_hits: Any, limit: int = 80) -> list[str]:
     return _dedupe(names)[: max(1, limit)]
 
 
-def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str]) -> dict[str, Any]:
+def _previous_rule_learning(
+    db: Session, claim_id: UUID, fields: dict[str, str]
+) -> dict[str, Any]:
     hospital_name = _txt(fields.get("hospital_name"))
     doctor_norm = _norm_key(fields.get("treating_doctor"))
     reg_norm = _norm_key(fields.get("treating_doctor_registration_number"))
@@ -1852,9 +2564,10 @@ def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str])
             "notes": [],
         }
 
-    rows = db.execute(
-        text(
-            """
+    rows = (
+        db.execute(
+            text(
+                """
             SELECT c.external_claim_id,
                    dr.recommendation,
                    dr.rule_hits,
@@ -1873,14 +2586,17 @@ def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str])
             ORDER BY dr.generated_at DESC
             LIMIT 300
             """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "hospital_name": hospital_name,
-            "doctor_norm": doctor_norm,
-            "reg_norm": reg_norm,
-        },
-    ).mappings().all()
+            ),
+            {
+                "claim_id": str(claim_id),
+                "hospital_name": hospital_name,
+                "doctor_norm": doctor_norm,
+                "reg_norm": reg_norm,
+            },
+        )
+        .mappings()
+        .all()
+    )
 
     if not rows:
         return {
@@ -1894,7 +2610,12 @@ def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str])
         }
 
     rule_counter: Counter[str] = Counter()
-    recommendation_mix: dict[str, int] = {"reject": 0, "approve": 0, "query": 0, "unknown": 0}
+    recommendation_mix: dict[str, int] = {
+        "reject": 0,
+        "approve": 0,
+        "query": 0,
+        "unknown": 0,
+    }
     matched_claim_ids: list[str] = []
 
     for row in rows:
@@ -1909,7 +2630,11 @@ def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str])
             rule_counter[rule_name] += 1
 
     sample_size = len(rows)
-    reject_rate = round((recommendation_mix.get("reject", 0) * 100.0 / sample_size), 2) if sample_size else 0.0
+    reject_rate = (
+        round((recommendation_mix.get("reject", 0) * 100.0 / sample_size), 2)
+        if sample_size
+        else 0.0
+    )
     top_triggered_rules = [
         {"rule": name, "count": int(count)}
         for (name, count) in rule_counter.most_common(10)
@@ -1926,7 +2651,9 @@ def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str])
             f"Previous matched decisions: reject={recommendation_mix.get('reject', 0)}, approve={recommendation_mix.get('approve', 0)}, query={recommendation_mix.get('query', 0)} (reject rate {reject_rate}%)."
         )
 
-    learning_alert = bool(sample_size >= 8 and reject_rate >= 60.0 and top_triggered_rules)
+    learning_alert = bool(
+        sample_size >= 8 and reject_rate >= 60.0 and top_triggered_rules
+    )
 
     return {
         "sample_size": sample_size,
@@ -1937,11 +2664,16 @@ def _previous_rule_learning(db: Session, claim_id: UUID, fields: dict[str, str])
         "learning_alert": learning_alert,
         "notes": _dedupe(notes)[:10],
     }
+
+
 def _llm_fields(ctx: dict[str, Any]) -> tuple[dict[str, str], float | None]:
     if not settings.openai_api_key:
         raise ClaimStructuringError("OPENAI_API_KEY not configured")
 
-    model = str(settings.openai_rag_model or settings.openai_model or "gpt-4o-mini").strip() or "gpt-4o-mini"
+    model = (
+        str(settings.openai_rag_model or settings.openai_model or "gpt-4o-mini").strip()
+        or "gpt-4o-mini"
+    )
 
     prompt = (
         "You are a medical-claim data segregation engine. Return strict JSON only.\n"
@@ -1953,13 +2685,18 @@ def _llm_fields(ctx: dict[str, Any]) -> tuple[dict[str, str], float | None]:
         "Segregation: complaints must go only in complaints; objective admission/stay observations must go only in findings.\n"
         "Map dates strictly: admission->doa, discharge->dod.\n"
         "Conclusion fields: conclusion and recommendation must be concise and decision-ready.\n"
-        "Exact keys required: " + ", ".join(FIELD_KEYS) + "\n\n"
+        "Exact keys required: "
+        + ", ".join(FIELD_KEYS)
+        + "\n\n"
         + json.dumps(ctx, ensure_ascii=False)
     )
     payload = {
         "model": model,
         "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": "Return strict JSON only."}]},
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": "Return strict JSON only."}],
+            },
             {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
         ],
     }
@@ -1971,7 +2708,9 @@ def _llm_fields(ctx: dict[str, Any]) -> tuple[dict[str, str], float | None]:
             f"LLM structured segregation failed: HTTP {exc.status_code or 'unknown'}: {exc}"
         ) from exc
     except Exception as exc:
-        raise ClaimStructuringError(f"LLM structured segregation failed: {exc}") from exc
+        raise ClaimStructuringError(
+            f"LLM structured segregation failed: {exc}"
+        ) from exc
 
     parsed = _json_obj(_extract_openai_text(body))
     if not isinstance(parsed, dict):
@@ -2074,10 +2813,20 @@ def sync_clean_provider_registry_for_claim(
     return True
 
 
-def _persist(db: Session, claim_id: UUID, external_claim_id: str, fields: dict[str, str], source: str, confidence: float | None, actor_id: str, raw_payload: dict[str, Any]) -> dict[str, Any]:
-    row = db.execute(
-        text(
-            """
+def _persist(
+    db: Session,
+    claim_id: UUID,
+    external_claim_id: str,
+    fields: dict[str, str],
+    source: str,
+    confidence: float | None,
+    actor_id: str,
+    raw_payload: dict[str, Any],
+) -> dict[str, Any]:
+    row = (
+        db.execute(
+            text(
+                """
             INSERT INTO claim_structured_data (
                 claim_id, external_claim_id, company_name, claim_type, insured_name, hospital_name,
                 treating_doctor, treating_doctor_registration_number, doa, dod, diagnosis, complaints,
@@ -2124,34 +2873,43 @@ def _persist(db: Session, claim_id: UUID, external_claim_id: str, fields: dict[s
                 deranged_investigation, claim_amount, conclusion, recommendation, raw_payload,
                 source, confidence, created_at, updated_at
             """
-        ),
-        {
-            "claim_id": str(claim_id),
-            "external_claim_id": external_claim_id,
-            "company_name": fields.get("company_name"),
-            "claim_type": fields.get("claim_type"),
-            "insured_name": fields.get("insured_name"),
-            "hospital_name": fields.get("hospital_name"),
-            "treating_doctor": fields.get("treating_doctor"),
-            "treating_doctor_registration_number": fields.get("treating_doctor_registration_number"),
-            "doa": fields.get("doa"),
-            "dod": fields.get("dod"),
-            "diagnosis": fields.get("diagnosis"),
-            "complaints": fields.get("complaints"),
-            "findings": fields.get("findings"),
-            "investigation_finding_in_details": fields.get("investigation_finding_in_details"),
-            "medicine_used": fields.get("medicine_used"),
-            "high_end_antibiotic_for_rejection": fields.get("high_end_antibiotic_for_rejection"),
-            "deranged_investigation": fields.get("deranged_investigation"),
-            "claim_amount": fields.get("claim_amount"),
-            "conclusion": fields.get("conclusion"),
-            "recommendation": fields.get("recommendation"),
-            "raw_payload": json.dumps(raw_payload, ensure_ascii=False, default=str),
-            "source": _txt(source)[:40],
-            "confidence": confidence,
-            "created_by": actor_id,
-        },
-    ).mappings().one()
+            ),
+            {
+                "claim_id": str(claim_id),
+                "external_claim_id": external_claim_id,
+                "company_name": fields.get("company_name"),
+                "claim_type": fields.get("claim_type"),
+                "insured_name": fields.get("insured_name"),
+                "hospital_name": fields.get("hospital_name"),
+                "treating_doctor": fields.get("treating_doctor"),
+                "treating_doctor_registration_number": fields.get(
+                    "treating_doctor_registration_number"
+                ),
+                "doa": fields.get("doa"),
+                "dod": fields.get("dod"),
+                "diagnosis": fields.get("diagnosis"),
+                "complaints": fields.get("complaints"),
+                "findings": fields.get("findings"),
+                "investigation_finding_in_details": fields.get(
+                    "investigation_finding_in_details"
+                ),
+                "medicine_used": fields.get("medicine_used"),
+                "high_end_antibiotic_for_rejection": fields.get(
+                    "high_end_antibiotic_for_rejection"
+                ),
+                "deranged_investigation": fields.get("deranged_investigation"),
+                "claim_amount": fields.get("claim_amount"),
+                "conclusion": fields.get("conclusion"),
+                "recommendation": fields.get("recommendation"),
+                "raw_payload": json.dumps(raw_payload, ensure_ascii=False, default=str),
+                "source": _txt(source)[:40],
+                "confidence": confidence,
+                "created_by": actor_id,
+            },
+        )
+        .mappings()
+        .one()
+    )
 
     clean_registry_synced = False
     clean_registry_error = ""
@@ -2205,9 +2963,10 @@ def _to_response(row: dict[str, Any]) -> dict[str, Any]:
 
 def get_claim_structured_data(db: Session, claim_id: UUID) -> dict[str, Any]:
     _ensure_table(db)
-    row = db.execute(
-        text(
-            """
+    row = (
+        db.execute(
+            text(
+                """
             SELECT claim_id, external_claim_id, company_name, claim_type, insured_name, hospital_name,
                    treating_doctor, treating_doctor_registration_number, doa, dod, diagnosis, complaints,
                    findings, investigation_finding_in_details, medicine_used, high_end_antibiotic_for_rejection,
@@ -2216,15 +2975,24 @@ def get_claim_structured_data(db: Session, claim_id: UUID) -> dict[str, Any]:
             FROM claim_structured_data
             WHERE claim_id = :claim_id
             """
-        ),
-        {"claim_id": str(claim_id)},
-    ).mappings().first()
+            ),
+            {"claim_id": str(claim_id)},
+        )
+        .mappings()
+        .first()
+    )
     if row is None:
         raise ClaimStructuredDataNotFoundError("structured data not found")
     return _to_response(dict(row))
 
 
-def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, use_llm: bool = False, force_refresh: bool = True) -> dict[str, Any]:
+def generate_claim_structured_data(
+    db: Session,
+    claim_id: UUID,
+    actor_id: str,
+    use_llm: bool = False,
+    force_refresh: bool = True,
+) -> dict[str, Any]:
     _ensure_table(db)
     if not force_refresh:
         try:
@@ -2261,7 +3029,11 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
     else:
         fields = heuristic_fields
 
-    fraud_check: dict[str, Any] = {"suspicious": False, "matched_claims": [], "notes": []}
+    fraud_check: dict[str, Any] = {
+        "suspicious": False,
+        "matched_claims": [],
+        "notes": [],
+    }
     if not STRICT_RULE_BASED_MODE:
         try:
             fraud_check = _fraud_pattern_compare(db, claim_id, fields, claim)
@@ -2269,15 +3041,44 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
             if bool(fraud_check.get("suspicious")):
                 source = source + "+fraud_check"
         except Exception as exc:
-            fraud_check = {"suspicious": False, "matched_claims": [], "notes": [f"fraud_check_error: {exc}"]}
+            fraud_check = {
+                "suspicious": False,
+                "matched_claims": [],
+                "notes": [f"fraud_check_error: {exc}"],
+            }
 
     hospital_trend: dict[str, Any] = {
         "hospital_name": _txt(fields.get("hospital_name")),
         "trend_alert": False,
         "notes": [],
-        "overall": {"total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
-        "recent": {"window": 0, "total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
-        "doctor_recent": {"total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
+        "overall": {
+            "total": 0,
+            "reject": 0,
+            "approve": 0,
+            "query": 0,
+            "unknown": 0,
+            "reject_rate": 0.0,
+            "query_rate": 0.0,
+        },
+        "recent": {
+            "window": 0,
+            "total": 0,
+            "reject": 0,
+            "approve": 0,
+            "query": 0,
+            "unknown": 0,
+            "reject_rate": 0.0,
+            "query_rate": 0.0,
+        },
+        "doctor_recent": {
+            "total": 0,
+            "reject": 0,
+            "approve": 0,
+            "query": 0,
+            "unknown": 0,
+            "reject_rate": 0.0,
+            "query_rate": 0.0,
+        },
         "recent_claim_ids": [],
         "top_diagnosis": [],
     }
@@ -2285,16 +3086,44 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
         try:
             hospital_trend = _hospital_trend_compare(db, claim_id, fields)
             fields = _apply_hospital_trend_signals_to_fields(fields, hospital_trend)
-            if bool(hospital_trend.get("trend_alert")) and "hospital_learning" not in source:
+            if (
+                bool(hospital_trend.get("trend_alert"))
+                and "hospital_learning" not in source
+            ):
                 source = source + "+hospital_learning"
         except Exception as exc:
             hospital_trend = {
                 "hospital_name": _txt(fields.get("hospital_name")),
                 "trend_alert": False,
                 "notes": [f"hospital_trend_error: {exc}"],
-                "overall": {"total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
-                "recent": {"window": 0, "total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
-                "doctor_recent": {"total": 0, "reject": 0, "approve": 0, "query": 0, "unknown": 0, "reject_rate": 0.0, "query_rate": 0.0},
+                "overall": {
+                    "total": 0,
+                    "reject": 0,
+                    "approve": 0,
+                    "query": 0,
+                    "unknown": 0,
+                    "reject_rate": 0.0,
+                    "query_rate": 0.0,
+                },
+                "recent": {
+                    "window": 0,
+                    "total": 0,
+                    "reject": 0,
+                    "approve": 0,
+                    "query": 0,
+                    "unknown": 0,
+                    "reject_rate": 0.0,
+                    "query_rate": 0.0,
+                },
+                "doctor_recent": {
+                    "total": 0,
+                    "reject": 0,
+                    "approve": 0,
+                    "query": 0,
+                    "unknown": 0,
+                    "reject_rate": 0.0,
+                    "query_rate": 0.0,
+                },
                 "recent_claim_ids": [],
                 "top_diagnosis": [],
             }
@@ -2311,14 +3140,22 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
     if not STRICT_RULE_BASED_MODE:
         try:
             previous_rule_learning = _previous_rule_learning(db, claim_id, fields)
-            if bool(previous_rule_learning.get("learning_alert")) and "rule_learning" not in source:
+            if (
+                bool(previous_rule_learning.get("learning_alert"))
+                and "rule_learning" not in source
+            ):
                 source = source + "+rule_learning"
         except Exception as exc:
             previous_rule_learning = {
                 "sample_size": 0,
                 "matched_claim_ids": [],
                 "top_triggered_rules": [],
-                "recommendation_mix": {"reject": 0, "approve": 0, "query": 0, "unknown": 0},
+                "recommendation_mix": {
+                    "reject": 0,
+                    "approve": 0,
+                    "query": 0,
+                    "unknown": 0,
+                },
                 "reject_rate": 0.0,
                 "learning_alert": False,
                 "notes": [f"rule_learning_error: {exc}"],
@@ -2336,9 +3173,15 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
     try:
         high_end_assessment = _assess_high_end_antibiotic_justification(db, fields, ctx)
         fields = _apply_high_end_antibiotic_guardrail(fields, high_end_assessment)
-        if bool(high_end_assessment.get("used_db_catalog")) and "medicine_db_lookup" not in source:
+        if (
+            bool(high_end_assessment.get("used_db_catalog"))
+            and "medicine_db_lookup" not in source
+        ):
             source = source + "+medicine_db_lookup"
-        if bool(high_end_assessment.get("used_api_lookup")) and "medicine_api_lookup" not in source:
+        if (
+            bool(high_end_assessment.get("used_api_lookup"))
+            and "medicine_api_lookup" not in source
+        ):
             source = source + "+medicine_api_lookup"
     except Exception as exc:
         high_end_assessment = {
@@ -2355,17 +3198,35 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
     learning_signals = {
         "fraud_similarity_alert": bool(fraud_check.get("suspicious")),
         "hospital_trend_alert": bool(hospital_trend.get("trend_alert")),
-        "previous_rule_learning_alert": bool(previous_rule_learning.get("learning_alert")),
-        "high_end_antibiotic_alert": bool((high_end_assessment.get("matched") or []) and not bool(high_end_assessment.get("justification_present"))),
-        "previous_rule_sample_size": int(previous_rule_learning.get("sample_size") or 0),
-        "previous_rule_reject_rate": float(previous_rule_learning.get("reject_rate") or 0.0),
-        "previous_rule_top_hits": (previous_rule_learning.get("top_triggered_rules") or [])[:5],
-        "risk_level": "high" if (
-            bool(fraud_check.get("suspicious"))
-            or bool(hospital_trend.get("trend_alert"))
-            or bool(previous_rule_learning.get("learning_alert"))
-            or bool((high_end_assessment.get("matched") or []) and not bool(high_end_assessment.get("justification_present")))
-        ) else "normal",
+        "previous_rule_learning_alert": bool(
+            previous_rule_learning.get("learning_alert")
+        ),
+        "high_end_antibiotic_alert": bool(
+            (high_end_assessment.get("matched") or [])
+            and not bool(high_end_assessment.get("justification_present"))
+        ),
+        "previous_rule_sample_size": int(
+            previous_rule_learning.get("sample_size") or 0
+        ),
+        "previous_rule_reject_rate": float(
+            previous_rule_learning.get("reject_rate") or 0.0
+        ),
+        "previous_rule_top_hits": (
+            previous_rule_learning.get("top_triggered_rules") or []
+        )[:5],
+        "risk_level": (
+            "high"
+            if (
+                bool(fraud_check.get("suspicious"))
+                or bool(hospital_trend.get("trend_alert"))
+                or bool(previous_rule_learning.get("learning_alert"))
+                or bool(
+                    (high_end_assessment.get("matched") or [])
+                    and not bool(high_end_assessment.get("justification_present"))
+                )
+            )
+            else "normal"
+        ),
     }
 
     raw_payload = {
@@ -2396,36 +3257,3 @@ def generate_claim_structured_data(db: Session, claim_id: UUID, actor_id: str, u
         raise ClaimStructuringError(f"failed to save structured data: {exc}") from exc
 
     return _to_response(saved)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

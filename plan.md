@@ -1,90 +1,112 @@
-Yes — split view by role.
+# ML Final Decision Shadow Mode Plan
 
-# Doctor / Auditor view (simple)
+## Summary
+Enable Final-decision ML in **shadow mode** behind existing AI decisioning.
 
-Only comparison panel — no cost.
+- AI checklist/decision remains the only decision authority in `/api/v1/claims/{claim_id}/decide`.
+- ML runs on the same claim context and returns `ml_prediction` for comparison only.
+- ML output is persisted and rendered in portal/QC views, but it never changes `final_status`, `source`, routing, or recommendation.
 
-```
-AI vs ML Analysis
--------------------------
-AI Decision: APPROVE
-AI Confidence: 0.82
+## Current State (As-Is)
 
-ML Decision: REJECT
-ML Confidence: 0.76
+- `ML_FINAL_DECISION_ENABLED` exists and defaults to `false` in `.env.example`.
+- Training endpoint exists: `POST /api/v1/ml/final-decision/train`.
+- Debug prediction endpoint exists: `GET /api/v1/claims/{claim_id}/ml/final-decision/predict`.
+- `/api/v1/claims/{claim_id}/decide` currently returns a fixed disabled ML payload when ML is not enabled.
+- UI already reads `latestDecision.ml_prediction` in:
+  - `verifAI-UI/src/components/pages/CaseDetail.jsx`
+  - `backend/app/web/qc/public/auditor-qc.js`
 
-Agreement: ❌
-```
+## Target Behavior (To-Be)
 
-That's it.
-No tokens, no model, no cost.
+When `ML_FINAL_DECISION_ENABLED=true`:
 
----
+- `/decide` computes AI result first using `decide_final(...)` with no ML override path.
+- `/decide` computes ML prediction as a shadow signal using structured features.
+- `/decide` persists `ml_prediction` inside `decision_payload` and returns it in `ClaimDecideResponse`.
+- Workflow event payload records AI-vs-ML observability fields:
+  - `ml_prediction_available`
+  - `ml_prediction_label`
+  - `ml_prediction_confidence`
+  - `ai_vs_ml_match`
 
-# Admin view (full cost summary)
+When ML is not usable:
 
-Show everything:
+- Stable response shape is preserved with:
+  - `available=false`
+  - `label=null`
+  - `confidence=0.0`
+  - clear reason (`disabled_by_config`, `model not trained`, or prediction error reason)
 
-```
-AI vs ML Analysis
--------------------------
-AI Decision: APPROVE
-AI Confidence: 0.82
+## Interface and API Notes
 
-ML Decision: REJECT
-ML Confidence: 0.76
+- Public API route stays unchanged: `POST /api/v1/claims/{claim_id}/decide`.
+- Response schema stays unchanged; behavior change is in `ml_prediction` content (now dynamic shadow output when enabled).
+- No new DB schema is required; shadow output is stored in existing `decision_results.decision_payload` JSON.
 
-Agreement: ❌
-```
+## Implementation Changes
 
-Then cost block:
+1. `backend/app/api/v1/endpoints/claims.py`
+- Keep `decide_final(...)` AI-only for `/decide` (no ML argument passed into final fusion).
+- Add gated shadow invocation of `predict_final_decision(...)` when `ML_FINAL_DECISION_ENABLED=true`.
+- Build ML inputs from structured/checklist/decision context:
+  - AI decision + confidence
+  - risk score
+  - conflict count
+  - rule-hit/flag count
+  - registry verification states
+  - amount, diagnosis, hospital from structured data
+- Attach `ml_prediction` to persisted payload and response regardless of availability.
+- Add AI-vs-ML telemetry fields in workflow event payload.
 
-```
-AI Usage Summary
--------------------------
-Model: GPT-4.1
-Tokens: 1500
-Cost: $0.0042
-Step: Report Generation
-```
+2. `plan.md`
+- Keep this document as the source of truth for shadow-mode policy and rollout criteria.
 
----
+## Test Plan
 
-# Admin (total claim cost)
+### Backend behavior
 
-```
-Total AI Cost (Claim)
--------------------------
-Extraction: $0.0021
-Structuring: $0.0014
-Reasoning: $0.0009
-Report: $0.0042
--------------------------
-Total: $0.0086
-```
+1. ML disabled path
+- Set `ML_FINAL_DECISION_ENABLED=false`.
+- Call `/api/v1/claims/{claim_id}/decide`.
+- Verify:
+  - decision outcome matches AI pipeline
+  - `ml_prediction.available=false`
+  - `ml_prediction.reason="disabled_by_config"`
 
----
+2. ML enabled + trained model
+- Set `ML_FINAL_DECISION_ENABLED=true` and ensure model artifact exists.
+- Call `/api/v1/claims/{claim_id}/decide`.
+- Verify:
+  - `ml_prediction.available=true`
+  - payload includes `label`, `confidence`, `probabilities`
+  - `final_status` remains AI-derived (no ML override)
 
-# Final UI layout
+3. ML enabled + model missing
+- Set `ML_FINAL_DECISION_ENABLED=true` with no trained artifact.
+- Call `/api/v1/claims/{claim_id}/decide`.
+- Verify:
+  - `ml_prediction.available=false`
+  - `ml_prediction.reason` indicates model unavailability
 
-Doctor/Auditor:
+4. Decision payload persistence
+- Fetch latest decision row (`/api/v1/claims/{claim_id}/decide/latest` or DB row).
+- Verify `decision_payload.ml_prediction` and telemetry-relevant fields are present.
 
-```
-Report
-AI summary
-AI vs ML panel
-Checklist
-```
+### UI smoke
 
-Admin:
+- Open claim detail views in both portals.
+- Verify AI/ML analysis panel updates with:
+  - AI decision
+  - ML decision
+  - agreement indicator
+  - ML confidence
 
-```
-Report
-AI summary
-AI vs ML panel
-AI usage breakdown
-Total claim cost
-Checklist
-```
+## Assumptions and Defaults
 
-This is correct separation.
+- Label normalization remains:
+  - `approve` -> approve
+  - `reject` -> reject
+  - `query|need_more_evidence|manual_review` -> query (for agreement comparison)
+- `ML_FINAL_DECISION_MIN_CONFIDENCE` is treated as ML model confidence gating metadata in shadow prediction, not as an override trigger in `/decide`.
+- Promotion from shadow to advisory/override is out of scope for this phase and requires explicit policy change.

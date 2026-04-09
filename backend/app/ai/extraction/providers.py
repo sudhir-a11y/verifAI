@@ -4,6 +4,7 @@ import json
 import math
 import re
 import time
+import logging
 from typing import Any
 
 import boto3
@@ -20,6 +21,8 @@ from app.ai.openai_responses import (
 )
 from app.core.config import settings
 from app.schemas.extraction import ExtractionProvider
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractionConfigError(Exception):
@@ -2210,11 +2213,10 @@ def _extract_hybrid_local(
         if not merged_text.strip():
             raise ExtractionProcessingError("No text extracted from document")
 
-        # Extract medical entities from merged text
-        # Reuse existing entity extraction logic
-        from app.ai.extraction.medical_entities import extract_medical_entities
-
-        entities = extract_medical_entities(merged_text)
+        # Extract entities from merged text using the existing regex/heuristic
+        # focus-field extractor in this module (keeps extraction fully local).
+        entities = _extract_focus_fields_from_text(merged_text)
+        entities = _normalize_extracted_entities(entities, fallback_text=merged_text)
 
         # Check for KYC documents
         if _looks_like_kyc_document(document_name, merged_text):

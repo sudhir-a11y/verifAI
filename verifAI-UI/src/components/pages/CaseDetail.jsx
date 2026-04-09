@@ -8,6 +8,7 @@ import { evaluateClaimChecklist, getLatestClaimChecklist } from "../../services/
 import { claimDocumentStatus } from "../../services/userTools";
 import { listDocumentExtractions, runDocumentExtraction } from "../../services/extractions";
 import { listClaimWorkflowEvents } from "../../services/workflowEvents";
+import usePopupPermission from "../../hooks/usePopupPermission";
 
 function normalizeChecklist(payload) {
   if (!payload || typeof payload !== "object") return { found: false, checklist: [], source_summary: {} };

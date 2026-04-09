@@ -1,5 +1,9 @@
 ﻿from pathlib import Path
 
+# Disable PaddlePaddle oneDNN to prevent ConvertPirAttribute2RuntimeAttribute crash on PaddlePaddle 3.x
+import os
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse

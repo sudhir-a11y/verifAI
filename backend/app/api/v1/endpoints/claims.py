@@ -88,6 +88,7 @@ from app.workflows.claim_pipeline import run_claim_pipeline
 from app.workflows.claim_freshness import is_artifact_fresh_for_claim
 from app.workflows.prepare_flow import prepare_claim_for_ai
 from app.ai.report_generator import AIReportGeneratorError, generate_ai_report_html
+from app.ml_decision.predictor import predict_final_decision
 from app.repositories import checklist_context_repo
 
 router = APIRouter(prefix="/claims", tags=["claims"])
@@ -1277,26 +1278,57 @@ def run_claim_decision_endpoint(
         )
     checklist_result["flags"] = flags
 
-    # 5. ML prediction is intentionally disabled for now; keep payload shape stable.
-    ml_prediction_payload = {
+    # 5. Run decision engine (AI-only, no human doctor override)
+    final = decide_final(
+        checklist_result=checklist_result,
+        doctor_verification=None,
+        registry_verifications=registry_verifications,
+        structured_data=structured,
+    )
+
+    # 6. Shadow ML prediction (never influences final decision)
+    ml_prediction_payload: dict = {
         "available": False,
         "label": None,
         "confidence": 0.0,
         "probabilities": {},
         "model_version": None,
         "training_examples": 0,
-        "reason": "ml_disabled_by_policy",
+        "reason": "disabled_by_config",
     }
-
-    # 6. Run decision engine (AI-only, no human doctor override)
-    final = decide_final(
-        checklist_result=checklist_result,
-        doctor_verification=None,
-        registry_verifications=registry_verifications,
-        ml_prediction=ml_prediction_payload,
-        ml_min_confidence=float(getattr(settings, "ml_final_decision_min_confidence", 0.75)),
-        structured_data=structured,
-    )
+    if bool(getattr(settings, "ml_final_decision_enabled", False)):
+        try:
+            amount = structured.get("claim_amount") or structured.get("bill_amount")
+            diagnosis = structured.get("diagnosis")
+            hospital = structured.get("hospital_name") or structured.get("hospital")
+            conflicts = final.get("conflicts") if isinstance(final.get("conflicts"), list) else []
+            flags_for_ml = checklist_result.get("flags")
+            rule_hit_count = len(flags_for_ml) if isinstance(flags_for_ml, list) else 0
+            ml_pred = predict_final_decision(
+                db,
+                ai_decision=final.get("ai_decision") or checklist_result.get("ai_decision") or checklist_result.get("recommendation"),
+                ai_confidence=checklist_result.get("ai_confidence") or checklist_result.get("confidence") or final.get("confidence"),
+                risk_score=final.get("risk_score"),
+                conflict_count=len(conflicts),
+                rule_hit_count=rule_hit_count,
+                verifications=registry_verifications,
+                amount=amount,
+                diagnosis=diagnosis,
+                hospital=hospital,
+                min_confidence=float(getattr(settings, "ml_final_decision_min_confidence", 0.75)),
+            )
+            ml_prediction_payload = dict(ml_pred.__dict__)
+        except Exception as exc:
+            ml_prediction_payload = {
+                "available": False,
+                "label": None,
+                "confidence": 0.0,
+                "probabilities": {},
+                "model_version": None,
+                "training_examples": 0,
+                "reason": f"prediction_failed: {type(exc).__name__}",
+            }
+    final["ml_prediction"] = ml_prediction_payload
 
     # 7. Persist decision
     recommendation = final_status_to_decision_recommendation(final.get("final_status"))
@@ -1365,6 +1397,21 @@ def run_claim_decision_endpoint(
             "checklist_flags_count": len(checklist_result.get("flags", [])),
             "checklist_severity": checklist_result.get("severity"),
             "registry_verifications": registry_verifications,
+            "ml_prediction_available": bool(ml_prediction_payload.get("available")),
+            "ml_prediction_label": ml_prediction_payload.get("label"),
+            "ml_prediction_confidence": ml_prediction_payload.get("confidence"),
+            "ai_vs_ml_match": (
+                (
+                    _recommendation_to_final_status(
+                        checklist_result.get("ai_decision")
+                        or checklist_result.get("recommendation")
+                        or final.get("ai_decision")
+                    )
+                    == _recommendation_to_final_status(ml_prediction_payload.get("label"))
+                )
+                if bool(ml_prediction_payload.get("available")) and ml_prediction_payload.get("label")
+                else None
+            ),
         },
     )
 
