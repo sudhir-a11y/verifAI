@@ -1932,8 +1932,8 @@
       + '<p id="doctor-assigned-msg"></p>'
       + '<p class="muted claim-total" id="doctor-assigned-total">Total claims: 0</p>'
       + '<div class="table-wrap claim-status-table-wrap"><table><thead><tr>'
-      + '<th>Claim ID</th><th>Treatment Type</th><th>Status</th><th>Documents</th><th>Last Upload</th><th>Assigned At</th><th>Allotment Date</th><th>Final Status</th><th>Action</th>'
-      + '</tr></thead><tbody id="doctor-assigned-tbody"><tr><td colspan="9">Loading...</td></tr></tbody></table></div>'
+      + '<th>Claim ID</th><th>Treatment Type</th><th>Status</th><th>Documents</th><th>Last Upload</th><th>Assigned At</th><th>Allotment Date</th><th>Final Status</th><th>Auditor Comment</th><th>Action</th>'
+      + '</tr></thead><tbody id="doctor-assigned-tbody"><tr><td colspan="10">Loading...</td></tr></tbody></table></div>'
       + '<div class="claim-pagination">'
       + '<div class="claim-pagination__left"><label for="doctor-page-size">Rows</label><select id="doctor-page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></div>'
       + '<div class="claim-pagination__info" id="doctor-page-info">Showing 0-0 of 0</div>'
@@ -2086,6 +2086,8 @@
       const sortedItems = sortClaimsByAllotmentDateFirst((result.items || []), true);
       const rows = sortedItems.map((c) => {
         const treatmentType = resolveTreatmentType(c);
+        const auditorComment = String(c.auditor_comment || '').trim();
+        const auditorCommentPreview = auditorComment.length > 100 ? (auditorComment.slice(0, 100) + '...') : auditorComment;
         return '<tr>'
           + '<td>' + escapeHtml(c.external_claim_id || '-') + '</td>'
           + '<td>' + escapeHtml(treatmentType || '-') + '</td>'
@@ -2095,6 +2097,7 @@
           + '<td>' + escapeHtml(formatDateTime(c.assigned_at)) + '</td>'
           + '<td>' + escapeHtml(formatDateOnly(c.allotment_date)) + '</td>'
           + '<td class="doctor-final-status">' + renderFinalStatus(c.final_status) + '</td>'
+          + '<td title="' + escapeHtml(auditorComment) + '">' + escapeHtml(auditorCommentPreview || '-') + '</td>'
           + '<td><div class="doctor-case-actions">'
           + '<button type="button" class="btn-soft" data-open-case="' + escapeHtml(c.external_claim_id || '') + '" data-open-claim-id="' + escapeHtml(c.id || '') + '">Open Case</button>'
           + '<button type="button" class="btn-soft" data-change-status="' + escapeHtml(c.id) + '" data-current-status="' + escapeHtml(c.status || '') + '">Change Status</button>'
@@ -2102,7 +2105,7 @@
           + '</tr>';
       }).join('');
 
-      tbody.innerHTML = rows || '<tr><td colspan="9">No assigned claims found.</td></tr>';
+      tbody.innerHTML = rows || '<tr><td colspan="10">No assigned claims found.</td></tr>';
 
       tbody.querySelectorAll('button[data-open-case]').forEach((btn) => {
         btn.addEventListener('click', async function () {
@@ -2160,7 +2163,7 @@
       await loadRows(true);
     } catch (err) {
       setMessage('doctor-assigned-msg', 'err', err.message);
-      tbody.innerHTML = '<tr><td colspan="8">Failed to load assigned cases.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10">Failed to load assigned cases.</td></tr>';
       updatePaginationUi();
     }
   }
@@ -5130,6 +5133,7 @@
       detailRows.push(summaryRow('Last Upload', asTextCell(formatDateTime(statusItem.last_upload || ''))));
       detailRows.push(summaryRow('Current Status', asTextCell(formatStatusText(claim.status || '-'))));
       detailRows.push(summaryRow('Final Status', asTextCell(statusItem.final_status || (checklistLatest && checklistLatest.recommendation ? checklistLatest.recommendation : 'Pending'))));
+      detailRows.push(summaryRow('Auditor Comment', asTextCell(statusItem.auditor_comment || '-')));
       detailRows.push(summaryRow('Doctor Opinion', asTextCell(statusItem.opinion || '-')));
       detailRows.push(summaryRow('Priority', asTextCell(String(claim.priority || '-'))));
       detailRows.push(summaryRow('Source Channel', asTextCell(claim.source_channel || '-')));
@@ -6453,6 +6457,7 @@
         : ((initialStatusFilter === 'uploaded' || initialStatusFilter === 'all') ? 'all' : 'no'),
     };
     if (auditOnlyRole) {
+      state.status = 'pending';
       state.qc = 'no';
     }
     const defaultTaggingMap = {
@@ -6619,6 +6624,12 @@
     }
 
     if (auditOnlyRole) {
+      if (statusFilterEl) {
+        statusFilterEl.value = 'pending';
+        statusFilterEl.disabled = true;
+        const statusFilterGroup = statusFilterEl.closest('.claim-filter-group');
+        if (statusFilterGroup) statusFilterGroup.style.display = 'none';
+      }
       if (qcFilterEl) {
         qcFilterEl.value = 'no';
         qcFilterEl.disabled = true;
@@ -7266,7 +7277,7 @@
       const allotmentDate = String(allotmentDateEl && allotmentDateEl.value ? allotmentDateEl.value : '').trim();
       const statusFilterRaw = String(statusFilterEl && statusFilterEl.value ? statusFilterEl.value : state.status).trim();
       const qcFilterRaw = String(qcFilterEl && qcFilterEl.value ? qcFilterEl.value : (state.qc || 'no')).trim();
-      const statusFilter = statusFilterRaw;
+      const statusFilter = auditOnlyRole ? 'pending' : statusFilterRaw;
       const qcFilter = auditOnlyRole ? 'no' : qcFilterRaw;
       const doctorFilter = String(doctorFilterEl && doctorFilterEl.value ? doctorFilterEl.value : '').trim();
 
@@ -8810,7 +8821,7 @@ async function renderLegacyMigration() {
     if (page === 'dashboard') {
       if (activeRole === 'super_admin') return renderSuperAdminDashboard();
       if (activeRole === 'doctor') return renderDoctorDashboard();
-      if (activeRole === 'auditor') return renderCompletedReports('all');
+      if (activeRole === 'auditor') return renderCompletedReports('pending');
       return renderUserDashboard();
     }
     if (page === 'assigned-cases') return renderDoctorAssignedCases();
@@ -8827,7 +8838,7 @@ async function renderLegacyMigration() {
 
     if (page === 'completed-not-uploaded') return renderCompletedReports('pending');
     if (page === 'completed-uploaded') return renderCompletedReports('uploaded');
-    if (page === 'audit-claims') return renderCompletedReports('all');
+    if (page === 'audit-claims') return renderCompletedReports('pending');
     if (page === 'export-data') return renderExportData();
     if (page === 'allotment-date-wise') return renderAllotmentDateWise();
     if (page === 'bank-details') return renderUserBankDetails();

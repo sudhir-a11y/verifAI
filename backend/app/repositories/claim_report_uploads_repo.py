@@ -139,6 +139,53 @@ def get_by_claim_id(db: Session, claim_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def reset_upload_metadata_for_rework(
+    db: Session,
+    *,
+    claim_id: str,
+    updated_by: str,
+) -> None:
+    db.execute(
+        text(
+            """
+            INSERT INTO claim_report_uploads (
+                claim_id,
+                report_export_status,
+                tagging,
+                subtagging,
+                opinion,
+                qc_status,
+                updated_by,
+                updated_at
+            )
+            VALUES (
+                :claim_id,
+                'pending',
+                NULL,
+                NULL,
+                NULL,
+                'no',
+                :updated_by,
+                NOW()
+            )
+            ON CONFLICT (claim_id)
+            DO UPDATE SET
+                report_export_status = 'pending',
+                tagging = NULL,
+                subtagging = NULL,
+                opinion = NULL,
+                qc_status = 'no',
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            """
+        ),
+        {
+            "claim_id": str(claim_id),
+            "updated_by": str(updated_by or ""),
+        },
+    )
+
+
 def upsert_upload_metadata_partial(
     db: Session,
     *,

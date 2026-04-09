@@ -152,6 +152,18 @@ def list_claim_document_status_rows(
                 WHERE LOWER(TRIM(label_type)) = 'auditor_report_learning'
                 ORDER BY claim_id, created_at DESC
             ),
+            latest_sendback_comment AS (
+                SELECT DISTINCT ON (claim_id)
+                    claim_id,
+                    NULLIF(TRIM(COALESCE(event_payload->>'note', '')), '') AS auditor_comment,
+                    NULLIF(TRIM(COALESCE(actor_id, '')), '') AS auditor_comment_by,
+                    occurred_at AS auditor_comment_at
+                FROM workflow_events
+                WHERE event_type = 'claim_status_updated'
+                  AND COALESCE(event_payload->>'status', '') = 'in_review'
+                  AND NULLIF(TRIM(COALESCE(event_payload->>'note', '')), '') IS NOT NULL
+                ORDER BY claim_id, occurred_at DESC
+            ),
             legacy_data AS (
                 SELECT claim_id, legacy_payload
                 FROM claim_legacy_data
@@ -191,7 +203,11 @@ def list_claim_document_status_rows(
                     NULLIF(TRIM(COALESCE(ldata.legacy_payload->>'discharge_date', '')), ''),
                     NULLIF(TRIM(COALESCE(ldata.legacy_payload->>'discharge date', '')), '')
                 ) AS dod_date,
+                COALESCE(um.opinion, '') AS opinion,
                 COALESCE(al.learning_note, '') AS auditor_learning,
+                COALESCE(lsc.auditor_comment, '') AS auditor_comment,
+                COALESCE(lsc.auditor_comment_by, '') AS auditor_comment_by,
+                lsc.auditor_comment_at,
                 ldata.legacy_payload AS legacy_payload
             FROM claims c
             LEFT JOIN latest_assignment la ON la.claim_id = c.id
@@ -200,6 +216,7 @@ def list_claim_document_status_rows(
             LEFT JOIN upload_meta um ON um.claim_id = c.id
             LEFT JOIN latest_decision ld ON ld.claim_id = c.id
             LEFT JOIN latest_auditor_learning al ON al.claim_id = c.id
+            LEFT JOIN latest_sendback_comment lsc ON lsc.claim_id = c.id
             LEFT JOIN legacy_data ldata ON ldata.claim_id = c.id
             {where_sql}
             ORDER BY COALESCE(la.allotment_date, DATE(c.updated_at)) {order_sql}, c.updated_at {order_sql}

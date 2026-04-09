@@ -90,6 +90,7 @@ from app.workflows.claim_freshness import is_artifact_fresh_for_claim
 from app.workflows.prepare_flow import prepare_claim_for_ai
 from app.ai.report_generator import AIReportGeneratorError, generate_ai_report_html
 from app.repositories import checklist_context_repo
+from app.repositories import claim_report_uploads_repo
 
 router = APIRouter(prefix="/claims", tags=["claims"])
 
@@ -166,6 +167,13 @@ def update_claim_status_endpoint(
         auditor_note = str(payload.note or "").strip()
         if not auditor_note:
             raise HTTPException(status_code=400, detail="auditor opinion is required")
+        # Re-open for doctor edit: clear previous upload/QC metadata so claim re-enters auditor queue after doctor completes.
+        claim_report_uploads_repo.ensure_claim_report_uploads_table(db)
+        claim_report_uploads_repo.reset_upload_metadata_for_rework(
+            db,
+            claim_id=str(claim_id),
+            updated_by=current_user.username,
+        )
         enriched_payload = payload.model_copy(update={"actor_id": payload.actor_id or current_user.username, "note": auditor_note})
     else:
         enriched_payload = payload.model_copy(update={"actor_id": payload.actor_id or current_user.username})

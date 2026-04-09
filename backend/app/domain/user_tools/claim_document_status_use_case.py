@@ -155,7 +155,7 @@ def get_claim_document_status(
     auto_exclude_withdrawn = normalized_status != "withdrawn"
     if exclude_withdrawn or auto_exclude_withdrawn:
         filters.append("c.status <> 'withdrawn'")
-    if exclude_tagged:
+    if exclude_tagged and current_user_role != UserRole.doctor:
         filters.append("NULLIF(TRIM(COALESCE(um.tagging, '')), '') IS NULL")
 
     effective_doctors = _split_doctor_filter(doctor_filter)
@@ -233,7 +233,11 @@ def get_claim_document_status(
                 "final_status": str(r.get("final_status") or "Pending"),
                 "doa_date": str(r.get("doa_date") or ""),
                 "dod_date": str(r.get("dod_date") or ""),
+                "opinion": str(r.get("opinion") or ""),
                 "auditor_learning": str(r.get("auditor_learning") or ""),
+                "auditor_comment": str(r.get("auditor_comment") or ""),
+                "auditor_comment_by": str(r.get("auditor_comment_by") or ""),
+                "auditor_comment_at": str(r.get("auditor_comment_at") or ""),
                 "claim_type": claim_type,
                 "treatment_type": treatment_type,
                 "legacy_payload": legacy_payload,
